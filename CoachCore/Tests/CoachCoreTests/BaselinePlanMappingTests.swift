@@ -185,3 +185,65 @@ extension BaselinePlanMappingTests {
         XCTAssertFalse(BaselinePlanMapping.anchorEfforts(from: report).contains { $0.date == run.start && $0.isMarkedRace })
     }
 }
+
+extension BaselinePlanMappingTests {
+    /// A pre-break half, a longer break and a slower post-break 10K, for a half-marathon goal: the 10K is the
+    /// anchor in every plan week after the break, not the half that the baseline's own pick (the closest
+    /// distance to the goal) would take (SPEC 3.5 rule 4, #28).
+    func testAPostBreakRaceIsTheAnchorForEveryWeekAfterTheBreak() throws {
+        let days: [PlanWeekday: Double] = [.monday: 60, .wednesday: 60, .saturday: 80]
+        var acts: [Activity] = []
+        func easy(_ weeks: Range<Int>) {
+            for w in weeks { for (d, m) in days.sorted(by: { $0.key < $1.key }) {
+                acts.append(GoalFixture.run("w\(w)-\(d.rawValue)", week: w, day: d, minutes: m))
+            } }
+        }
+        easy(0..<1)
+        // Pre-break half marathon (week 0 Saturday), then weeks 1 to 3 off (3 break weeks).
+        let halfSpeed = 4.0, tenSpeed = 3.4
+        func race(_ id: String, week: Int, meters: Double, speed: Double) -> Activity {
+            BaselineFixture.run(id, start: BaselineFixture.date(day: week * 7 + 5), seconds: meters / speed, speed: speed,
+                                hr: { _ in 170 }, cadence: 172)
+        }
+        acts.append(race("race-half", week: 0, meters: Distance.halfMarathon, speed: halfSpeed))
+        // A 10K race after the break, much slower than the half predicts, then two weeks of easy running.
+        acts.append(race("race-10k", week: 4, meters: Distance.tenK, speed: tenSpeed))
+        easy(5..<11)
+        let asOf = BaselineFixture.date(day: 11 * 7, hour: 12)
+        let report = BaselineBuilder.build(activities: acts,
+                                           efforts: [EffortMark(activityID: "race-half", kind: .race),
+                                                     EffortMark(activityID: "race-10k", kind: .race)],
+                                           options: BaselineOptions(asOf: asOf, timeZone: GoalFixture.timeZone))
+        let start = BaselineFixture.date(day: 11 * 7, hour: 0)
+        // A half marathon 16 weeks after the plan starts (on a Sunday).
+        let weekOfStart = BaselineFixture.date(day: 11 * 7, hour: 8)
+        let raceDate = weekOfStart.addingTimeInterval(Double(16 * 7 + 6) * 86_400)
+        var settings = GoalFixture.settings()
+        settings.race = GoalRace(name: "Synthetic Half", date: raceDate, distanceMeters: Distance.halfMarathon, time: .bestPossible)
+        let input = BaselinePlanMapping.planInput(settings: settings, baseline: report, startDate: start)
+        let half = RaceEquivalent(distanceMeters: Distance.halfMarathon, seconds: Distance.halfMarathon / halfSpeed)
+        let ten = RaceEquivalent(distanceMeters: Distance.tenK, seconds: Distance.tenK / tenSpeed)
+        // The baseline's pick for a half-marathon goal is the pre-break half.
+        let picked = try XCTUnwrap(input.fitnessAnchor)
+        XCTAssertEqual(picked.distanceMeters, half.distanceMeters, accuracy: 1)
+        XCTAssertEqual(picked.seconds, half.seconds, accuracy: 30)
+        XCTAssertEqual(input.anchorEfforts.filter(\.isMarkedRace).count, 2)
+
+        let result = PlanBuilder.build(input, history: BaselinePlanMapping.planHistory(from: report), timeZone: GoalFixture.timeZone)
+        let plan = try XCTUnwrap(result.plan, "\(result.issues)")
+        let fromTen = try XCTUnwrap(TargetModel.riegelPace(anchor: ten, seconds: 3600))
+        let fromHalf = try XCTUnwrap(TargetModel.riegelPace(anchor: half, seconds: 3600))
+        XCTAssertGreaterThan(fromTen, fromHalf * 1.1, "the 10K is a much slower anchor")
+        var seen = 0
+        for week in plan.weeks {
+            for s in week.workouts.flatMap({ $0.prescription?.segments ?? [] }) where s.intensity == .threshold {
+                let p = try XCTUnwrap(s.target.pace)
+                XCTAssertGreaterThanOrEqual(p.fastestSecondsPerKm, fromTen * 0.98, "from the post-break race")
+                XCTAssertLessThanOrEqual(p.slowestSecondsPerKm, fromTen * 1.03)
+                seen += 1
+            }
+        }
+        XCTAssertGreaterThan(seen, 0)
+        XCTAssertGreaterThan(plan.weeks.count, 6, "well past the third week back")
+    }
+}

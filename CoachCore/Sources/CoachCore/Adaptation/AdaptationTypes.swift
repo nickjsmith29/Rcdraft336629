@@ -64,6 +64,8 @@ public struct TriggerMetric: Equatable, Sendable, Codable {
         /// Quality sessions planned in a week against the limit (3.5 rule 4's
         /// return ramp or the weekly limit; a count).
         case qualitySessions
+        /// Days without a run in the break behind the return factor (3.5 rule 4).
+        case daysOff
     }
 
     public enum Unit: String, Equatable, Hashable, Sendable, Codable {
@@ -112,6 +114,8 @@ public struct PlanChange: Equatable, Sendable, Codable {
         case volumeHeld
         /// Easy pace targets one step slower because easy runs ran above the zone-2 cap (section 8).
         case easyPaceSlower
+        /// Anchor- and easy-derived paces moved by the factor for the days off after a break (3.5 rule 4, #28), slower or back toward the pre-break targets.
+        case returnPaces
         /// The next long run kept at its current length until decoupling allows a step (3.3).
         case longRunHeld
         /// Volume growth frozen after a pain check-in (3.5).

@@ -297,7 +297,7 @@ public enum AdaptationEngine {
             let behind = window.filter { $0.signal == .behind || $0.signal == .overreached }
             if ahead.count >= need {
                 let factor = 1 - limits.paceStep
-                let ids = scalePaces(Self.quality, factor)
+                let ids = scalePaces(Self.quality, factor, asOf: asOf)
                 guard !ids.isEmpty else { return }   // nothing to move yet; keep the sessions for later
                 state.qualityPaceFactor *= factor
                 state.qualitySignals = []
@@ -307,7 +307,7 @@ public enum AdaptationEngine {
                     explanation: "\(ahead.count) of your last \(window.count) quality sessions beat the target pace without heart rate rising above its band, so quality pace targets move \(AdaptationFormatting.percent(limits.paceStep)) faster on \(ids.count) upcoming \(ids.count == 1 ? "session" : "sessions"). (Heuristic, SPEC F4, section 8.)"))
             } else if behind.count >= need {
                 let factor = 1 + limits.paceStep
-                let ids = scalePaces(Self.quality, factor)
+                let ids = scalePaces(Self.quality, factor, asOf: asOf)
                 if !ids.isEmpty { state.qualityPaceFactor *= factor }
                 state.qualitySignals = []
                 let triggers = cite(behind, of: window)
@@ -338,10 +338,21 @@ public enum AdaptationEngine {
 
         /// Scales pace targets of the given intensities on every session to
         /// come except races. Returns the ids changed.
-        mutating func scalePaces(_ intensities: Set<WorkoutIntensity>, _ factor: Double) -> [String] {
+        ///
+        /// A faster step (factor below 1) never takes a session in weeks 1 to
+        /// 3 back from a break past its pre-break target: the paces it holds
+        /// are the pre-break ones divided by the return factor already
+        /// applied, so the step is limited to that (SPEC 3.5 rule 4, #28).
+        mutating func scalePaces(_ intensities: Set<WorkoutIntensity>, _ factor: Double, asOf: Date = .distantPast) -> [String] {
             var ids: [String] = []
+            let schedule = factor < 1 ? returnSchedule(asOf: asOf) : nil
+            func step(_ w: PlannedWorkout) -> Double {
+                guard let schedule, inReturnCap(schedule, on: w.date) else { return factor }
+                return max(factor, w.prescription?.returnPaceFactor ?? 1)
+            }
             for i in plan.indices where plan[i].kind != .race {
-                if let scaled = plan[i].scalingPaces(of: intensities, by: factor) {
+                let by = step(plan[i])
+                if by < 1 || factor >= 1, let scaled = plan[i].scalingPaces(of: intensities, by: by) {
                     plan[i] = scaled
                     ids.append(scaled.id)
                 }
@@ -349,7 +360,8 @@ public enum AdaptationEngine {
             // The original plan moves with it (section 8), so what grows back
             // keeps the paces in force.
             for i in state.planSnapshot.sessions.indices where state.planSnapshot.sessions[i].kind != .race {
-                if let scaled = state.planSnapshot.sessions[i].scalingPaces(of: intensities, by: factor) {
+                let by = step(state.planSnapshot.sessions[i])
+                if by < 1 || factor >= 1, let scaled = state.planSnapshot.sessions[i].scalingPaces(of: intensities, by: by) {
                     state.planSnapshot.sessions[i] = scaled
                 }
             }
@@ -925,6 +937,8 @@ public enum AdaptationEngine {
             // A shortfall the previous event already found is not posted again.
             changes += check.changes.filter { !state.reportedHoldShortfalls.contains($0) }
             state.reportedHoldShortfalls = check.changes
+            // The slower paces after a break (3.5 rule 4) go on before the plan is noted as returned.
+            applyReturnPaces(asOf: asOf)
             noteReturned(asOf: asOf, regrowth: regrowth)
             return AdaptationOutcome(state: state, plan: plan, history: history,
                                      assessment: assessment, changes: changes, guardrailReport: repaired.report,

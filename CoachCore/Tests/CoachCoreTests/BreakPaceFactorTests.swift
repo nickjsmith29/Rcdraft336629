@@ -339,10 +339,18 @@ final class ReturnPaceScheduleTests: XCTestCase {
             XCTAssertEqual(t.easyPace, base.easyPace, "week \(k)")
             XCTAssertEqual(t.thresholdPace, base.thresholdPace, "week \(k)")
         }
-        // A race that is itself so old that the break's weeks are long past changes nothing either way.
+        // The race is the anchor for every week after the break (not only the first three), at factor 1.
         XCTAssertTrue(ended.affects(week: 3))
-        XCTAssertFalse(ended.affects(week: 4))
+        XCTAssertTrue(ended.affects(week: 4))
+        XCTAssertTrue(ended.affects(week: 40))
+        XCTAssertEqual(ended.factor(week: 40), 1)
         XCTAssertTrue(held.affects(week: 40))
+        // A slower race than the pre-break fitness anchor paces week 4 on from the race, not from the anchor.
+        let slow = effort(1700, day: 52, race: true)
+        let slowed = try XCTUnwrap(latest(h, efforts: [slow]))
+        let fromRace = try XCTUnwrap(targets(slowed, week: 6).thresholdPace)
+        XCTAssertEqual(fromRace, try XCTUnwrap(TargetModel.riegelPace(anchor: slow.anchor, seconds: 3600)), accuracy: 1e-9)
+        XCTAssertGreaterThan(fromRace, try XCTUnwrap(base.thresholdPace))
     }
 
     func testAMarkedRaceBeforeTheBreakNeverEndsALongBreak() throws {

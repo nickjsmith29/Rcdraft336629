@@ -38,7 +38,35 @@ extension PlannedWorkout {
         guard changed else { return nil }
         var copy = self
         copy.prescription = WorkoutPrescription(purpose: p.purpose, phase: p.phase, segments: segments, rules: p.rules,
-                                                raceDistanceMeters: p.raceDistanceMeters)
+                                                raceDistanceMeters: p.raceDistanceMeters,
+                                                returnPaceFactor: p.returnPaceFactor)
+        return copy
+    }
+
+    /// Pace targets taken from the fitness anchor or the easy-pace sample.
+    static let returnFactorIntensities: Set<WorkoutIntensity> = [.easy, .recovery, .steady, .threshold, .vo2max]
+
+    /// This session with the return factor (SPEC 3.5 rule 4, #28) changed to
+    /// `desired` (1 or less): the paces taken from the anchor or the easy
+    /// sample are multiplied by `applied / desired` (the factor already
+    /// applied is on the prescription), so the factor is never applied twice
+    /// and a lifted factor undoes the slow-down. Nil when it is already `desired`.
+    func returningPaces(toFactor desired: Double) -> PlannedWorkout? {
+        guard let p = prescription, desired.isFinite, desired > 0, desired <= 1 else { return nil }
+        let applied = p.returnPaceFactor ?? 1
+        guard abs(applied - desired) > 1e-12 else { return nil }
+        let ratio = applied / desired
+        let segments = p.segments.map { s -> WorkoutSegment in
+            guard Self.returnFactorIntensities.contains(s.intensity), let pace = s.target.pace else { return s }
+            let scaled = PaceTarget(fastestSecondsPerKm: pace.fastestSecondsPerKm * ratio,
+                                    slowestSecondsPerKm: pace.slowestSecondsPerKm * ratio)
+            return WorkoutSegment(role: s.role, intensity: s.intensity, durationSeconds: s.durationSeconds,
+                                  target: WorkoutTarget(heartRate: s.target.heartRate, pace: scaled, primary: s.target.primary))
+        }
+        var copy = self
+        copy.prescription = WorkoutPrescription(purpose: p.purpose, phase: p.phase, segments: segments, rules: p.rules,
+                                                raceDistanceMeters: p.raceDistanceMeters,
+                                                returnPaceFactor: desired < 1 ? desired : nil)
         return copy
     }
 
@@ -62,7 +90,8 @@ extension PlannedWorkout {
                                          durationSeconds: s.durationSeconds + delta * s.durationSeconds / mainTotal, target: s.target)
         }
         copy.prescription = WorkoutPrescription(purpose: p.purpose, phase: p.phase, segments: segments, rules: p.rules,
-                                                raceDistanceMeters: p.raceDistanceMeters)
+                                                raceDistanceMeters: p.raceDistanceMeters,
+                                                returnPaceFactor: p.returnPaceFactor)
         return copy
     }
 

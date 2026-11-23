@@ -342,8 +342,11 @@ struct PrescriptionCoding: Codable {
     var rules: [String]
     /// Race day only (#89); absent in states stored before it, which decode as nil.
     var raceDistanceMeters: Double?
+    /// The return factor applied to the paces (#28); absent in states stored before it.
+    var returnPaceFactor: Double?
 
     init(_ p: WorkoutPrescription) {
+        returnPaceFactor = p.returnPaceFactor
         purpose = p.purpose
         phase = p.phase.rawValue
         segments = p.segments.map(SegmentCoding.init)
@@ -355,7 +358,7 @@ struct PrescriptionCoding: Codable {
         WorkoutPrescription(purpose: purpose, phase: try decodeRaw(phase, as: PlanPhase.self),
                             segments: try segments.map { try $0.value() },
                             rules: try rules.map { try decodeRaw($0, as: PlanRule.self) },
-                            raceDistanceMeters: raceDistanceMeters)
+                            raceDistanceMeters: raceDistanceMeters, returnPaceFactor: returnPaceFactor)
     }
 }
 

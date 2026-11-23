@@ -108,7 +108,8 @@ public struct PlanInput: Equatable, Sendable {
     /// builder reads them only for the paces after a break (SPEC 3.5 rule 4):
     /// the anchor from before the break (no training pace may be faster than
     /// it through the third week back) and a marked race after the break,
-    /// which becomes the anchor and ends the return factor. Empty means no
+    /// which becomes the anchor and ends the return factor. Leaving a marked
+    /// race after a longer break out means the factor holds (errs slow). Empty means no
     /// dated efforts are known: `fitnessAnchor` is then treated as an anchor
     /// from before the break, so the factor applies to it in full.
     public var anchorEfforts: [AnchorEffort]

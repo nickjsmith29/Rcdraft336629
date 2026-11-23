@@ -72,7 +72,8 @@ struct ReturnPaceSchedule: Equatable {
     /// True when week `k` back is changed at all by the break.
     func affects(week k: Int) -> Bool {
         guard k >= 1 else { return false }
-        return isCapped(week: k) || (!isShort && raceAnchor == nil)
+        // A marked race after the break is the anchor for every later week too.
+        return isCapped(week: k) || !isShort || raceAnchor != nil
     }
 
     // MARK: Paces
@@ -82,8 +83,10 @@ struct ReturnPaceSchedule: Equatable {
     /// VO2max) or the easy-pace sample (easy, recovery) divided by the week's
     /// factor, and through week 3 back never faster than from the anchor of
     /// before the break, even when a marked race after the break gives a
-    /// faster one. In those weeks a marked race after the break is the
-    /// anchor (SPEC 3.5 rule 4). The race pace is from the goal and the
+    /// faster one. A marked race after the break is the anchor in every week
+    /// after it (SPEC 3.5 rule 4), not only in weeks 1 to 3, whichever race
+    /// `PlanInput.fitnessAnchor` came from (the baseline's pick is the race
+    /// closest to the goal distance, often one from before the break). The race pace is from the goal and the
     /// prediction, not the anchor or the easy-pace sample, and stays as it is.
     /// `fitnessAnchor` is `PlanInput.fitnessAnchor`.
     func targets(_ base: TargetModel, fitnessAnchor: RaceEquivalent?, weekStart: Date, timeZone: TimeZone) -> TargetModel {
@@ -91,7 +94,7 @@ struct ReturnPaceSchedule: Equatable {
         guard affects(week: k) else { return base }
         let f = factor(week: k)
         let capped = isCapped(week: k)
-        let current = capped ? (raceAnchor ?? fitnessAnchor) : fitnessAnchor
+        let current = raceAnchor ?? fitnessAnchor
         func pace(_ seconds: Double) -> Double? {
             guard let c = current, var p = TargetModel.riegelPace(anchor: c, seconds: seconds) else { return nil }
             if capped, let pre = preBreakAnchor, let q = TargetModel.riegelPace(anchor: pre, seconds: seconds) {

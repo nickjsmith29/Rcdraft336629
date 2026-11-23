@@ -1127,6 +1127,8 @@ private struct Builder {
     /// The pace targets for the week being drafted: `v.targets`, or under the
     /// break's factor in the weeks it covers (`ReturnPaceSchedule.targets`).
     var paceTargets: TargetModel
+    /// The return factor applied to `paceTargets` (nil: none), recorded on each session's prescription.
+    var paceFactor: Double?
     /// The start's week is history but not over (#48): the plan is provisional.
     let startWeekOpen: Bool
     /// Mean weekly volume of the last (up to 4) complete history weeks before the start week, if any.
@@ -1179,6 +1181,7 @@ private struct Builder {
                                                      startDate: input.startDate, firstMonday: v.firstMonday,
                                                      timeZone: timeZone, limits: limits)
         self.paceTargets = v.targets
+        self.paceFactor = nil
         let cal = PlanCalendar.calendar(timeZone: timeZone)
         self.hardDays = history.filter { $0.kind.isQuality || $0.kind == .race }.compactMap {
             cal.dateComponents([.day], from: v.firstMonday, to: cal.startOfDay(for: $0.date)).day
@@ -2032,11 +2035,12 @@ private struct Builder {
     /// the paces taken from the anchor or the easy-pace sample. `applied`
     /// collects the weeks the factor slows, for the plan's note.
     mutating func setPaceTargets(week i: Int, applied: inout [Int]) {
-        guard let schedule = returnPaces, i < v.weekStarts.count else { paceTargets = v.targets; return }
+        guard let schedule = returnPaces, i < v.weekStarts.count else { paceTargets = v.targets; paceFactor = nil; return }
         paceTargets = schedule.targets(v.targets, fitnessAnchor: input.fitnessAnchor, weekStart: v.weekStarts[i],
                                        timeZone: timeZone)
         let k = schedule.weekNumber(of: v.weekStarts[i], timeZone: timeZone)
-        if schedule.affects(week: k), schedule.factor(week: k) < 1 { applied.append(i) }
+        paceFactor = schedule.affects(week: k) && schedule.factor(week: k) < 1 ? schedule.factor(week: k) : nil
+        if paceFactor != nil { applied.append(i) }
     }
 
     /// The plan's note on slower paces after a break (3.5 rule 4), or nil.
@@ -2607,7 +2611,8 @@ private struct Builder {
             case .quality(let k): tag = k.rawValue
             default: tag = "easy"
             }
-            let p = WorkoutPrescription(purpose: d.purpose, phase: phase, segments: d.segments, rules: d.rules)
+            let p = WorkoutPrescription(purpose: d.purpose, phase: phase, segments: d.segments, rules: d.rules,
+                                        returnPaceFactor: paceFactor)
             return PlannedWorkout(id: "plan-w\(i)-d\(d.day)-\(tag)", date: sessionDate(week: i, day: d.day), kind: d.kind,
                                   durationSeconds: d.duration, distanceMeters: nil, prescription: p)
         }
