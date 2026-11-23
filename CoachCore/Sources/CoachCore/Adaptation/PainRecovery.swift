@@ -301,12 +301,10 @@ public enum NextMorningRule {
         let n = max(2, limits.risingWeeks)
         let mornings = reports.filter { $0.isValid && $0.timing == .nextMorning && $0.date <= asOf }
         guard !mornings.isEmpty else { return false }
-        let cal = PlanCalendar.calendar(timeZone: timeZone)
         let thisWeek = PlanCalendar.weekStart(containing: asOf, timeZone: timeZone)
         var peaks: [Int] = []
         for k in stride(from: n - 1, through: 0, by: -1) {
-            guard let start = cal.date(byAdding: .day, value: -7 * k, to: thisWeek) else { return false }
-            let week = PlanCalendar.weekStart(containing: start.addingTimeInterval(3600), timeZone: timeZone)
+            let week = PlanCalendar.weekStart(weeks: -k, after: thisWeek, timeZone: timeZone)
             let scores = mornings.filter { PlanCalendar.weekStart(containing: $0.date, timeZone: timeZone) == week }
                 .compactMap(\.validScore)
             guard let peak = scores.max() else { return false }
@@ -468,10 +466,8 @@ public struct PainReturn: Equatable, Sendable, Codable {
     /// The plan week at which the full plan-volume step runs (the step that
     /// lifts the quality ban once it passes with no symptoms).
     public func planVolumeWeek(timeZone: TimeZone, limits: PainRecoveryLimits = .default) -> Date {
-        let cal = PlanCalendar.calendar(timeZone: timeZone)
         let ahead = max(0, PainReturnRule.planVolumeStep(limits) - step)
-        let d = cal.date(byAdding: .day, value: 7 * ahead, to: stepWeek) ?? stepWeek
-        return PlanCalendar.weekStart(containing: d.addingTimeInterval(3600), timeZone: timeZone)
+        return PlanCalendar.weekStart(weeks: ahead, after: stepWeek, timeZone: timeZone)
     }
 }
 

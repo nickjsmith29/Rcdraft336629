@@ -523,7 +523,7 @@ extension BaselineBuilder {
         func weeklyLoad() -> BaselineValue<WeeklyLoadBaseline> {
             guard let firstRun = runs.first else { return .insufficient(.init(.noRuns)) }
             let current = weekStart(options.asOf)
-            let windowStart = BaselineBuilder.addDays(-7 * (options.loadWindowWeeks - 1), to: current, cal)
+            let windowStart = PlanCalendar.weekStart(weeks: -(options.loadWindowWeeks - 1), after: current, timeZone: options.timeZone)
             var ws = max(windowStart, weekStart(firstRun.start))
             var weeks: [WeekLoad] = []
             while ws <= current {
@@ -763,7 +763,7 @@ extension BaselineBuilder {
 
         func cadence(_ load: BaselineValue<WeeklyLoadBaseline>) -> BaselineValue<CadenceTrend> {
             let current = weekStart(options.asOf)
-            let windowStart = BaselineBuilder.addDays(-7 * (options.loadWindowWeeks - 1), to: current, cal)
+            let windowStart = PlanCalendar.weekStart(weeks: -(options.loadWindowWeeks - 1), after: current, timeZone: options.timeZone)
             let window = runs.filter { $0.start >= windowStart }
             guard !window.isEmpty else { return .insufficient(.init(.noRuns)) }
             var withCadence: [CadenceRun] = []

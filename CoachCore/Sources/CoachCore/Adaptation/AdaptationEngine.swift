@@ -653,7 +653,7 @@ public enum AdaptationEngine {
                     if m.kind == .long || m.kind.isQuality {
                         // A race this week or on the Monday after it shapes what is left.
                         let week = PlanCalendar.weekStart(containing: m.date, timeZone: tz)
-                        let after = calendar.date(byAdding: .day, value: 8, to: week) ?? shift(week, weeks: 1)
+                        let after = addDays(1, to: shift(week, weeks: 1))
                         let race = (history + plan).first { $0.kind == .race && $0.date >= today && $0.date < after }
                         why = race.map { "The only days left this week it could take are on or next to the race on \(day($0.date)) or another hard day, so it is not made up: the race comes first." }
                             ?? "No lower-value session is left this week that it could replace without stacking hard days, so it is not made up."
@@ -793,7 +793,7 @@ public enum AdaptationEngine {
                                       explanation: explanation))
         }
 
-        func shift(_ d: Date, weeks: Int) -> Date { calendar.date(byAdding: .day, value: 7 * weeks, to: d) ?? d }
+        func shift(_ d: Date, weeks: Int) -> Date { PlanCalendar.weekStart(weeks: weeks, after: d, timeZone: tz) }
 
         // MARK: Volume holds (section 8)
 

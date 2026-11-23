@@ -169,7 +169,7 @@ enum GuardrailRepair {
         let tz = ctx.timeZone
         let measure = ctx.guardrails.measure
         let cal = PlanCalendar.calendar(timeZone: tz)
-        func shift(_ d: Date, weeks: Int) -> Date { cal.date(byAdding: .day, value: 7 * weeks, to: d) ?? d }
+        func shift(_ d: Date, weeks: Int) -> Date { PlanCalendar.weekStart(weeks: weeks, after: d, timeZone: tz) }
         func upcoming(in week: Date) -> [Int] {
             plan.indices.filter {
                 PlanCalendar.weekStart(containing: plan[$0].date, timeZone: tz) == week && plan[$0].date >= asOf

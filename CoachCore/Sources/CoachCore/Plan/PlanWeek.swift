@@ -23,13 +23,31 @@ public enum PlanCalendar {
         let day = cal.startOfDay(for: date)
         // Gregorian weekday: 1 = Sunday ... 7 = Saturday. Days since Monday:
         let daysSinceMonday = (cal.component(.weekday, from: day) + 5) % 7
-        return cal.date(byAdding: .day, value: -daysSinceMonday, to: day) ?? day
+        guard let monday = cal.date(byAdding: .day, value: -daysSinceMonday, to: day) else { return day }
+        // Normalize: where a Monday has no midnight (a clock change at 00:00),
+        // stepping back lands mid-day; the week start is that day's first instant.
+        return cal.startOfDay(for: monday)
     }
 
-    /// The Monday after `weekStart` (handles daylight-saving changes).
+    /// The Monday after `weekStart` (handles daylight-saving changes, including
+    /// zones whose clocks jump at midnight; see `weekStart(weeks:after:)`).
     public static func nextWeekStart(after weekStart: Date, timeZone: TimeZone) -> Date {
+        self.weekStart(weeks: 1, after: weekStart, timeZone: timeZone)
+    }
+
+    /// The week start `n` whole weeks after `weekStart` (`n` may be negative or
+    /// zero), stepping by calendar date, not by 7 * 86,400 seconds, and
+    /// normalizing with `startOfDay(for:)` so the result is always that
+    /// Monday's first instant. Where a Monday has no 00:00 (a clock change at
+    /// midnight, e.g. Asia/Tehran on 2021-03-22) a plain "add 7 days" lands at
+    /// 01:00, and every later addition would carry the drift. Returns the
+    /// normalized `weekStart` itself if the calendar cannot step.
+    public static func weekStart(weeks n: Int, after weekStart: Date, timeZone: TimeZone) -> Date {
         let cal = calendar(timeZone: timeZone)
-        return cal.date(byAdding: .day, value: 7, to: weekStart) ?? weekStart.addingTimeInterval(7 * 86_400)
+        let day = cal.startOfDay(for: weekStart)
+        let (days, overflow) = n.multipliedReportingOverflow(by: 7)
+        guard n != 0, !overflow, let moved = cal.date(byAdding: .day, value: days, to: day) else { return day }
+        return cal.startOfDay(for: moved)
     }
 }
 
