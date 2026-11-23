@@ -20,3 +20,5 @@ Coaches treat the long run as the longest run of the week by definition. No stud
 ## Owner's decision
 
 Option 1, "Cap at long run" (Nick, 23 Nov 2026, #23): no easy run is longer than the week's long run, and nothing goes past rule 5's long-run time cap or the runner's max session length; a week whose volume doesn't fit plans smaller with a note. Option not chosen: easy runs at most 75% of the week's long run (no source for the figure).
+
+Follow-up decision, "Keep long workout days" (Nick, 23 Nov 2026, #70): when this limit holds back easy time (mostly on 3 and 4 day weeks), that time goes to the quality sessions' easy cool-down (hard minutes unchanged, each session up to the week's long run, the long-run cap and the max session length) before the week is planned smaller. Option not chosen: plan those weeks smaller, as the first version of PR #53 did, which cut a 10K week at 330 minutes on 3 days to about 165 to 209 minutes. This ordering is coaching judgement, not a tested rule (heuristic).
