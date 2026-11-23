@@ -47,17 +47,14 @@ public struct CueReason: Equatable, Sendable {
         case noTarget
         /// Inside the first `startupSeconds` of the segment (F11).
         case startupWindow
-        /// Inside the band and under the ceiling, or a deviation that has not
-        /// yet lasted the sustained window (see `deviationSeconds`).
+        /// Inside the band and under the ceiling (or back inside after a cue
+        /// and held there).
         case withinTarget
         /// A deviation is under way but has not lasted `sustainSeconds` yet.
         case deviationPending
         /// Already cued for this deviation; waiting for it to end (re-entry
         /// must be sustained too) or for the reminder interval.
         case alreadyCued
-        /// The smoothed grade is changing (a hill's start or end): the live
-        /// grade and pace lag then, so pace deviations are not counted.
-        case gradeChanging
         /// A cue is due but the last one was less than `minimumGapSeconds` ago.
         case minimumGap
         /// "Speed up" suppressed because the smoothed grade is below
@@ -85,6 +82,9 @@ public struct CueReason: Equatable, Sendable {
     public let grade: Double?
     /// The pace factor applied (1 when `usedFlatFallback`).
     public let gradeFactor: Double
+    /// The grade uncertainty the band was widened by, as a fraction of grade: the
+    /// engine's base uncertainty, plus more while the smoothed grade is changing.
+    public let gradeUncertainty: Double
     /// True when no grade was available (altitude missing or too little
     /// distance yet) and the targets were taken as flat (f = 1).
     public let usedFlatFallback: Bool
@@ -100,7 +100,7 @@ public struct CueReason: Equatable, Sendable {
     public init(rule: Rule, paceSecondsPerKm: Double? = nil, bandFastestSecondsPerKm: Double? = nil,
                 bandSlowestSecondsPerKm: Double? = nil, fastTriggerSecondsPerKm: Double? = nil,
                 slowTriggerSecondsPerKm: Double? = nil, grade: Double? = nil, gradeFactor: Double = 1,
-                usedFlatFallback: Bool = false, heartRate: Double? = nil, heartRateCeiling: Double? = nil,
+                usedFlatFallback: Bool = false, gradeUncertainty: Double = 0, heartRate: Double? = nil, heartRateCeiling: Double? = nil,
                 deviationSeconds: Double? = nil, segmentSeconds: Double = 0) {
         self.rule = rule
         self.paceSecondsPerKm = paceSecondsPerKm
@@ -111,6 +111,7 @@ public struct CueReason: Equatable, Sendable {
         self.grade = grade
         self.gradeFactor = gradeFactor
         self.usedFlatFallback = usedFlatFallback
+        self.gradeUncertainty = gradeUncertainty
         self.heartRate = heartRate
         self.heartRateCeiling = heartRateCeiling
         self.deviationSeconds = deviationSeconds

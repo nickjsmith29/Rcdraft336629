@@ -48,18 +48,20 @@ final class CueEngineReplayTests: XCTestCase {
     /// A 60 s drift outside the band is cued within the sustained window plus the pace
     /// estimate's lag, as often as the estimate's own noise allows. The simulated
     /// estimate error is about 2% rms (about 11 s/mile), so a 15 s/mile drift is near
-    /// the noise floor: measured over 200 runs, 70% are cued within 40 s and 84% before
-    /// the drift ends; 30 s/mile is cued within 40 s in 97%.
+    /// the noise floor. With the 2% leave margin that keeps flat runs quiet (round 2), a
+    /// 60 s drift is cued within 40 s in 33% (15 s/mile) and 85% (30 s/mile) of 120 runs
+    /// each, median delay 30 s and 29 s; a sustained drift (see the acceptance tests) is cued
+    /// by nearly every run, only later.
     func testDriftsOutsideTheBandAreCuedWithinTheSustainedWindowPlusLag() {
         let fifteen = driftStats(15, within: 40, seeds: 1...60)
         let thirty = driftStats(30, within: 40, seeds: 1...60)
         print(String(format: "CUE true positives, 120 runs each: 15 s/mile cued within 40 s in %.0f%%, median delay %.0f s; "
                      + "30 s/mile in %.0f%%, median %.0f s",
                      fifteen.share * 100, fifteen.median, thirty.share * 100, thirty.median))
-        XCTAssertGreaterThanOrEqual(fifteen.share, 0.6)
-        XCTAssertLessThanOrEqual(fifteen.median, 30)
-        XCTAssertGreaterThanOrEqual(thirty.share, 0.93)
-        XCTAssertLessThanOrEqual(thirty.median, 30)
+        XCTAssertGreaterThanOrEqual(fifteen.share, 0.25)
+        XCTAssertLessThanOrEqual(fifteen.median, 35)
+        XCTAssertGreaterThanOrEqual(thirty.share, 0.8)
+        XCTAssertLessThanOrEqual(thirty.median, 35)
         // Cues of any other kind stay rare: 22 of the 240 five-minute runs in the replay (the estimator's
         // first minute, before it has learned the watch scale, and its lag after the drift ends).
         XCTAssertLessThanOrEqual(fifteen.wrongWay + thirty.wrongWay, 29)

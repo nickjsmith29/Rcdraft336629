@@ -10,10 +10,9 @@ public struct CueEngineConfig: Equatable, Sendable {
     public var sustainSeconds: Double = 25
     /// "Lasts" allows brief dips: within the sustained stretch (which must start
     /// and end with a reading on the deviating side) at least this share of the
-    /// pace readings must be on that side. Heuristic: a smoothed estimate that carries
+    /// readings must be on that side. Heuristic: a smoothed estimate that carries
     /// correlated GPS error crosses a band edge for a second or two even when
-    /// the runner is truly outside it, and a strict "every reading" rule would
-    /// then miss real drifts (about half of 15 s/mile drifts in the replay).
+    /// the runner is truly outside it.
     public var sustainFraction: Double = 0.8
     /// No cue in the first this-many seconds of a segment (F11: "never in the
     /// first 60 seconds of a rep"). Applied to every segment, not only reps,
@@ -22,29 +21,41 @@ public struct CueEngineConfig: Equatable, Sendable {
     /// Minimum seconds between any two cues. Heuristic: long enough to be
     /// heard and acted on, short enough not to feel ignored.
     public var minimumGapSeconds: Double = 30
-    /// A runner who stays out of the band (or over the ceiling) is cued again
-    /// after this many seconds. Heuristic.
-    public var repeatSeconds: Double = 60
-    /// Hysteresis margin: to count as outside the band the pace must pass
-    /// the band edge by this fraction of the edge pace (the *leaving* edge is
-    /// that far outside the band), but the runner counts as back in only at the
-    /// band edge itself, so the two edges differ by this margin. 0.005 is about
-    /// 2.7 s/mile at 8:50/mile. Heuristic.
-    public var leaveMarginFraction: Double = 0.005
+    /// A runner who stays out of the band (or over the ceiling) is reminded
+    /// after this many seconds, up to `maxReminders` times. Heuristic.
+    public var repeatSeconds: Double = 90
+    /// At most this many reminders per deviation after the first cue. Heuristic:
+    /// the estimate can stay wrong for minutes (a biased watch speed), and an
+    /// unlimited reminder every `repeatSeconds` would turn one false cue into many
+    /// (flat race-pace runs went from worst 1.18 to 0.89 false cues per mile).
+    public var maxReminders: Int = 1
+    /// Hysteresis margin: to count as outside the band the pace must pass the
+    /// band edge by this fraction of the edge pace (the *leaving* edge is that far
+    /// outside the band), but the runner counts as back in only at the band edge
+    /// itself, so the two edges differ by this margin. 0.02 is about 11 s/mile at
+    /// 8:50/mile. Heuristic: the simulated pace estimate has about 2% rms error
+    /// (correlated GPS error), and the plan's bands are only 2 to 3% wide, so the
+    /// sustained window alone gave a false "speed up" every 1.3 miles on flat
+    /// race-pace runs (0.5% margin). At 0.02 flat runs are at most 0.89 per mile,
+    /// at the cost of later or missed small drifts (a 15 s/mile drift is cued at a
+    /// median of 38 s instead of 26 s).
+    public var leaveMarginFraction: Double = 0.02
     /// The live grade carries altitude noise, so the band is widened to cover
-    /// the grades within this much (as a fraction, 0.005 = half a percentage
-    /// point) of the smoothed grade: the slow edge uses f(g + this), the fast
-    /// edge f(g - this) (the wider of that and f(g)). Heuristic.
-    public var gradeUncertainty: Double = 0.005
-    /// While the smoothed grade has moved by more than `gradeChangeHold` in
-    /// the last this-many seconds, the terrain is changing: the live grade and
-    /// the pace estimate both lag a hill's start or end, so pace deviations are
-    /// not counted then (cues already owed still go out). Heuristic: this is
-    /// what keeps false "speed up" cues on rolling hills below one per mile.
-    public var gradeChangeWindowSeconds: Double = 30
-    /// The grade change (fraction, 0.02 = 2 percentage points) that counts as
-    /// the terrain changing. Heuristic.
-    public var gradeChangeHold: Double = 0.02
+    /// the grades within this much (as a fraction, 0.0025 = a quarter of a
+    /// percentage point) of the smoothed grade: the slow edge uses f(g + this), the
+    /// fast edge f(g - this) (the wider of that and f(g)). Heuristic: a steady
+    /// 5% climb fitted over 90 m has about 0.2 points of noise. Larger values cost
+    /// true positives on climbs (0.005 made a 15 s/mile drift on a climb undetectable).
+    public var gradeUncertainty: Double = 0.0025
+    /// The fitted grade lags a hill's start or end, so while the smoothed grade is
+    /// changing the grade uncertainty grows by this multiple of the change seen in
+    /// the last `gradeChangeWindowSeconds` (instead of ignoring deviations).
+    /// Heuristic: 0.25 keeps rolling hills at or below 0.48 false cues per mile
+    /// with a quarter of readings widened by 1 point of grade or more; 0 gives
+    /// 1.9 on rolling hills.
+    public var gradeChangeWidening: Double = 0.25
+    /// The window the grade change is measured over, seconds. Heuristic.
+    public var gradeChangeWindowSeconds: Double = 15
     /// Heart-rate hysteresis: after going over the ceiling, HR must fall this
     /// many bpm below it (for the sustained window) to count as back under.
     /// Heuristic.
@@ -74,9 +85,10 @@ public struct CueEngineConfig: Equatable, Sendable {
 ///   `f(grade)` (3.6; flat targets, f = 1, when the live grade is nil, which
 ///   every decision's reason reports as `usedFlatFallback`).
 /// - Easy and recovery segments, and any segment whose target is heart-rate
-///   primary, hold the HR ceiling: HR above `HeartRateTarget.ceilingBPM`
-///   (strictly above, as the brief words it) for the sustained window cues
-///   "ease off" even when pace is on target.
+///   primary, hold the HR ceiling: HR at or above `HeartRateTarget.ceilingBPM`
+///   (exclusive, "stay below", as `HRZones.easyCeiling`) for the sustained
+///   window cues "ease off" even when pace is on target. A heart rate is carried
+///   forward for up to `maxEstimateAgeSeconds`, so sparse readings still work.
 /// - "Speed up" is never cued on a heart-rate-primary segment. A pace band
 ///   on such a segment still cues "slow down" when the runner is faster.
 /// - **Pending owner decision #83:** "speed up" is never cued while the
@@ -86,9 +98,9 @@ public struct CueEngineConfig: Equatable, Sendable {
 ///   `leaveMarginFraction`; the return counts only after `sustainSeconds`
 ///   at the band edge itself (a Schmitt trigger), so a runner on a band edge
 ///   is not flip-flopped.
-/// - The band is widened by `gradeUncertainty` of grade, and deviations are not
-///   counted while the smoothed grade is changing (`gradeChangeWindowSeconds`),
-///   because the live grade and the pace estimate lag a hill's start and end.
+/// - The band is widened by `gradeUncertainty` of grade, and more while the
+///   smoothed grade is changing (`gradeChangeWidening`), because the live grade
+///   and the pace estimate lag a hill's start and end.
 /// - Nothing in the first `startupSeconds` of a segment, and at least
 ///   `minimumGapSeconds` between cues. A deviation that goes on is cued again
 ///   every `repeatSeconds`.
@@ -152,9 +164,12 @@ public struct CueEngine: Sendable {
     private var paceSide = Side.inBand
     private var paceWindow = Window<Side>()
     private var paceOwed: CueAction?
+    private var paceReminders = 0
+    private var hrReminders = 0
     private var lastPaceCue: Double?
 
     private var hrOver = false
+    private var lastHeartRate: (value: Double, time: Double)?
     private var hrWindow = Window<Bool>()
     private var hrOwed = false
     private var lastHRCue: Double?
@@ -203,7 +218,9 @@ public struct CueEngine: Sendable {
         }
         lastTime = time
         let seg = time - segmentStart
-        let keep = cfg.sustainSeconds + 1.5
+        // Long enough that a reading up to `maxEstimateAgeSeconds` before the sustained
+        // stretch still anchors it, so any reading interval up to that works.
+        let keep = cfg.sustainSeconds + cfg.maxEstimateAgeSeconds
 
         // Inputs, validated.
         let gradeValue: Double? = grade.flatMap { g in
@@ -212,11 +229,11 @@ public struct CueEngine: Sendable {
         let f = gradeValue.map { sanitized(curve.factor(grade: $0)) } ?? 1
         gradeHistory.removeAll { time - $0.time > cfg.gradeChangeWindowSeconds }
         if let g = gradeValue { gradeHistory.append((time, g)) }
-        var gradeChanging = false
+        var gradeUncertainty = cfg.gradeUncertainty
         if let first = gradeHistory.first {
             var lo = first.grade, hi = first.grade
             for h in gradeHistory { lo = min(lo, h.grade); hi = max(hi, h.grade) }
-            gradeChanging = hi - lo > cfg.gradeChangeHold
+            gradeUncertainty += cfg.gradeChangeWidening * (hi - lo)
         }
         let target = segment?.target
         // The nominal band (segment target times f) and the wider one the
@@ -225,8 +242,8 @@ public struct CueEngine: Sendable {
             target?.pace.flatMap { p in
                 guard p.fastestSecondsPerKm.isFinite, p.slowestSecondsPerKm.isFinite,
                       p.fastestSecondsPerKm > 0 else { return nil }
-                let fHigh = gradeValue.map { sanitized(curve.factor(grade: $0 + cfg.gradeUncertainty)) } ?? 1
-                let fLow = gradeValue.map { sanitized(curve.factor(grade: $0 - cfg.gradeUncertainty)) } ?? 1
+                let fHigh = gradeValue.map { sanitized(curve.factor(grade: $0 + gradeUncertainty)) } ?? 1
+                let fLow = gradeValue.map { sanitized(curve.factor(grade: $0 - gradeUncertainty)) } ?? 1
                 return ((p.fastestSecondsPerKm * f, p.slowestSecondsPerKm * f),
                         (p.fastestSecondsPerKm * min(f, fLow), p.slowestSecondsPerKm * max(f, fHigh)))
             }
@@ -236,7 +253,10 @@ public struct CueEngine: Sendable {
                   p.isFinite, p > 0 else { return nil }
             return p
         }
-        let hr: Double? = heartRate.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+        // Heart rate arrives sparsely on a watch: carry the last finite value forward for up to
+        // `maxEstimateAgeSeconds`, like the pace estimate.
+        if let h = heartRate, h.isFinite, h > 0 { lastHeartRate = (h, time) }
+        let hr: Double? = lastHeartRate.flatMap { time - $0.time <= cfg.maxEstimateAgeSeconds ? $0.value : nil }
         let hrPrimary = target?.primary == .heartRate
         let usesHRCeiling = (segment?.intensity.isBelowAerobicThreshold ?? false) || hrPrimary
         let ceiling: Double? = usesHRCeiling ? target?.heartRate.ceilingBPM.flatMap { $0.isFinite && $0 > 0 ? $0 : nil } : nil
@@ -247,7 +267,7 @@ public struct CueEngine: Sendable {
                       fastTriggerSecondsPerKm: band.map { $0.fast * (1 - cfg.leaveMarginFraction) },
                       slowTriggerSecondsPerKm: band.map { $0.slow * (1 + cfg.leaveMarginFraction) },
                       grade: gradeValue, gradeFactor: f,
-                      usedFlatFallback: gradeValue == nil, heartRate: hr, heartRateCeiling: ceiling,
+                      usedFlatFallback: gradeValue == nil, gradeUncertainty: gradeValue == nil ? 0 : gradeUncertainty, heartRate: hr, heartRateCeiling: ceiling,
                       deviationSeconds: deviation, segmentSeconds: seg)
         }
         func none(_ rule: CueReason.Rule, deviation: Double? = nil) -> CueDecision {
@@ -261,7 +281,7 @@ public struct CueEngine: Sendable {
         var blockedRule: CueReason.Rule?
         var paceFiredSeconds: Double?
         var paceHeld: (value: Side, seconds: Double)?
-        if let b = band, let p = paceValue, !gradeChanging {
+        if let b = band, let p = paceValue {
             let slowLeave = b.slow * (1 + cfg.leaveMarginFraction)
             let fastLeave = b.fast * (1 - cfg.leaveMarginFraction)
             let slowThreshold = paceSide == .tooSlow ? b.slow : slowLeave
@@ -283,10 +303,13 @@ public struct CueEngine: Sendable {
                 if side != paceSide {
                     paceFiredSeconds = held.seconds
                     paceSide = side
+                    paceReminders = 0
                     paceHeld = nil
                     paceWindow.clear()
                     paceOwed = side == .tooSlow ? .speedUp : (side == .tooFast ? .slowDown : nil)
-                } else if side != .inBand, lastPaceCue.map({ time - $0 >= cfg.repeatSeconds }) ?? true {
+                } else if side != .inBand, paceReminders < cfg.maxReminders,
+                          lastPaceCue.map({ time - $0 >= cfg.repeatSeconds }) ?? true {
+                    paceReminders += 1
                     paceFiredSeconds = held.seconds
                     paceOwed = side == .tooSlow ? .speedUp : .slowDown
                 }
@@ -301,18 +324,21 @@ public struct CueEngine: Sendable {
         var hrFiredSeconds: Double?
         var hrHeld: (value: Bool, seconds: Double)?
         if let c = ceiling, let h = hr {
+            // The ceiling is exclusive ("stay below", like `HRZones.easyCeiling`): HR at it is over.
             let threshold = hrOver ? c - cfg.heartRateReentryMarginBPM : c
-            hrWindow.add(time, h > threshold, keep: keep)
+            hrWindow.add(time, h >= threshold, keep: keep)
             hrHeld = hrWindow.held(now: time, fraction: cfg.sustainFraction)
             if let held = hrHeld, held.seconds >= cfg.sustainSeconds {
                 let over = held.value
                 if over != hrOver {
                     hrFiredSeconds = held.seconds
                     hrOver = over
+                    hrReminders = 0
                     hrHeld = nil
                     hrWindow.clear()
                     hrOwed = over
-                } else if over, h > c, lastHRCue.map({ time - $0 >= cfg.repeatSeconds }) ?? true {
+                } else if over, h >= c, hrReminders < cfg.maxReminders, lastHRCue.map({ time - $0 >= cfg.repeatSeconds }) ?? true {
+                    hrReminders += 1
                     hrFiredSeconds = held.seconds
                     hrOwed = true
                 }
@@ -351,7 +377,6 @@ public struct CueEngine: Sendable {
         }
 
         if let rule = blockedRule { return none(rule) }
-        if gradeChanging && band != nil { return none(.gradeChanging) }
         if let held = paceHeld, held.value != paceSide {
             return none(held.value == .inBand ? .alreadyCued : .deviationPending, deviation: held.seconds)
         }

@@ -34,17 +34,21 @@ enum CueTestSupport {
         GradeEstimate(time: time, grade: g, spanMeters: 90)
     }
 
-    /// Feed a constant pace, grade and heart rate once per second from `from`
-    /// to `to` (inclusive) and return every decision.
+    /// Feed a constant pace, grade and heart rate every `step` seconds from `from` to `to`
+    /// (inclusive) and return every decision. With `heartRateEvery` of n, the heart rate is given
+    /// only on every n-th reading (a watch reports it sparsely); the others get nil.
     @discardableResult
     static func drive(_ engine: inout CueEngine, from: Double, to: Double, pace: Double?, grade: Double? = 0,
-                      heartRate: Double? = nil) -> [CueDecision] {
+                      heartRate: Double? = nil, step: Double = 1, heartRateEvery: Int = 1) -> [CueDecision] {
         var out: [CueDecision] = []
         var t = from
+        var i = 0
         while t <= to {
+            let hr = i % heartRateEvery == 0 ? heartRate : nil
             out.append(engine.evaluate(time: t, pace: pace.map { estimate(pace: $0, time: t) },
-                                       grade: grade.map { self.grade($0, time: t) }, heartRate: heartRate))
-            t += 1
+                                       grade: grade.map { self.grade($0, time: t) }, heartRate: hr))
+            t += step
+            i += 1
         }
         return out
     }

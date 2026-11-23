@@ -40,14 +40,17 @@ extension SyntheticRun {
     /// within `target` (0 = fast edge, 0.5 = middle, 1 = slow edge) times the
     /// curve's factor for that stretch's grade (3.6), so a climb really is on
     /// target and the true pace always lies inside the grade-adjusted band.
+    /// `offsetSecondsPerKm` is added to that grade-adjusted pace (positive: slower than the
+    /// position, so past the slow edge from `bandPosition` 1): a runner who truly drifts off target.
     /// Altitude truth follows the stretch grades (see `SyntheticSegment`).
-    public static func holdingTarget(_ target: PaceTarget, bandPosition: Double = 0.5, stretches: [GradeStretch],
+    public static func holdingTarget(_ target: PaceTarget, bandPosition: Double = 0.5, offsetSecondsPerKm: Double = 0,
+                                     stretches: [GradeStretch],
                                      curve: any GradePaceCurve = DefaultGradePaceCurve(), seed: UInt64,
                                      noise: SyntheticNoise = .forCueTests) -> SyntheticRun {
         let position = min(max(bandPosition, 0), 1)
         let flat = target.fastestSecondsPerKm + position * (target.slowestSecondsPerKm - target.fastestSecondsPerKm)
         let segments = stretches.map {
-            SyntheticSegment(duration: $0.seconds, paceSecondsPerKm: flat * curve.factor(grade: $0.grade),
+            SyntheticSegment(duration: $0.seconds, paceSecondsPerKm: flat * curve.factor(grade: $0.grade) + offsetSecondsPerKm,
                              grade: $0.grade)
         }
         return SyntheticRun(segments: segments, seed: seed, noise: noise)

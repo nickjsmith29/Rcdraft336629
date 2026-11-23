@@ -28,9 +28,10 @@ final class CueEngineTests: XCTestCase {
         XCTAssertEqual(r.paceSecondsPerKm ?? .nan, 380, accuracy: 1e-9)
         XCTAssertEqual(r.bandFastestSecondsPerKm ?? .nan, 327, accuracy: 1e-9)
         XCTAssertEqual(r.bandSlowestSecondsPerKm ?? .nan, 337, accuracy: 1e-9)
-        XCTAssertEqual(r.slowTriggerSecondsPerKm ?? .nan, 337 * 1.005, accuracy: 1e-9)
-        // On the flat the fast edge still covers f(-0.5%) (the grade uncertainty).
-        XCTAssertEqual(r.fastTriggerSecondsPerKm ?? .nan, 327 * (1 - 0.12 / 9 / 2) * 0.995, accuracy: 1e-9)
+        XCTAssertEqual(r.slowTriggerSecondsPerKm ?? .nan, 337 * 1.02, accuracy: 1e-9)
+        // On the flat the fast edge still covers f(-0.25%) (the grade uncertainty).
+        XCTAssertEqual(r.fastTriggerSecondsPerKm ?? .nan, 327 * (1 - 0.12 / 9 / 4) * 0.98, accuracy: 1e-9)
+        XCTAssertEqual(r.gradeUncertainty, 0.0025, accuracy: 1e-12)
         XCTAssertEqual(r.deviationSeconds ?? .nan, 25, accuracy: 1e-9)
         XCTAssertEqual(r.gradeFactor, 1)
         XCTAssertFalse(r.usedFlatFallback)
@@ -52,14 +53,14 @@ final class CueEngineTests: XCTestCase {
     func testInsideTheBandAndInsideTheLeaveMarginIsQuiet() {
         var e = CueEngine(segment: seg)
         XCTAssertTrue(cues(S.drive(&e, from: 0, to: 300, pace: 332, grade: 0)).isEmpty)
-        // Slightly outside the band but inside the 0.5% leave margin: still quiet.
+        // Slightly outside the band but inside the 2% leave margin: still quiet.
         var e2 = CueEngine(segment: seg)
-        let ds = S.drive(&e2, from: 0, to: 300, pace: 338, grade: 0)
+        let ds = S.drive(&e2, from: 0, to: 300, pace: 343, grade: 0)
         XCTAssertTrue(cues(ds).isEmpty)
         XCTAssertEqual(ds.last?.reason.rule, .withinTarget)
         // Just past it: cued.
         var e3 = CueEngine(segment: seg)
-        XCTAssertEqual(cues(S.drive(&e3, from: 0, to: 300, pace: 340, grade: 0)).first?.action, .speedUp)
+        XCTAssertEqual(cues(S.drive(&e3, from: 0, to: 300, pace: 346, grade: 0)).first?.action, .speedUp)
     }
 
     func testBriefDeviationIsIgnored() {
@@ -161,9 +162,8 @@ final class CueEngineTests: XCTestCase {
         var e = CueEngine(segment: seg)
         S.drive(&e, from: 0, to: 199, pace: 360, grade: -0.05)  // slow on the descent, quiet
         let flat = S.drive(&e, from: 200, to: 260, pace: 360, grade: 0)
-        // The slow time on the descent does not count. The grade moved 5 points when the descent ended,
-        // so deviations are held for 30 s (the grade-change window), then need their own 25 s.
-        XCTAssertEqual(cues(flat).first?.time, 255)
+        // The slow time on the descent does not count: a fresh 25 s window starts when it ends.
+        XCTAssertEqual(cues(flat).first?.time, 225)
     }
 
     // MARK: Heart rate
@@ -179,16 +179,32 @@ final class CueEngineTests: XCTestCase {
         XCTAssertEqual(fired.first?.reason.rule, .sustainedHeartRateOverCeiling)
         XCTAssertEqual(fired.first?.reason.heartRate, 156)
         XCTAssertEqual(fired.first?.reason.heartRateCeiling, 150)
-        // The reminder comes 60 s after the first cue, not before.
-        XCTAssertEqual(fired.dropFirst().first?.time, 145)
+        // The reminder comes 90 s after the first cue, not before.
+        XCTAssertEqual(fired.dropFirst().first?.time, 175)
+        XCTAssertEqual(fired.count, 2, "one reminder at most (maxReminders)")
     }
 
-    func testHeartRateAtOrBelowCeilingIsQuiet() {
+    func testHeartRateBelowCeilingIsQuiet() {
         let easy = S.easySegment(ceiling: 150)
         var e = CueEngine(segment: easy)
-        XCTAssertTrue(cues(S.drive(&e, from: 0, to: 300, pace: 380, grade: 0, heartRate: 150)).isEmpty)
+        XCTAssertTrue(cues(S.drive(&e, from: 0, to: 300, pace: 380, grade: 0, heartRate: 149)).isEmpty)
         var e2 = CueEngine(segment: easy)
         XCTAssertTrue(cues(S.drive(&e2, from: 0, to: 300, pace: 380, grade: 0, heartRate: 120)).isEmpty)
+    }
+
+    /// `HeartRateTarget.ceilingBPM` is exclusive ("stay below", as `HRZones.easyCeiling`: a bpm equal to it is
+    /// already the next zone), so HR equal to the ceiling held for the sustained window cues "ease off".
+    func testHeartRateEqualToTheCeilingCuesEaseOff() {
+        var e = CueEngine(segment: S.easySegment(ceiling: 150))
+        let fired = cues(S.drive(&e, from: 0, to: 200, pace: 380, grade: 0, heartRate: 150))
+        XCTAssertEqual(fired.first?.action, .easeOff)
+        XCTAssertEqual(fired.first?.time, 85)
+        // And it counts as back under only below the ceiling less the margin: 147 is still over, 146 is under.
+        var e2 = CueEngine(segment: S.easySegment(ceiling: 150))
+        S.drive(&e2, from: 0, to: 100, pace: 380, grade: 0, heartRate: 150)
+        XCTAssertTrue(cues(S.drive(&e2, from: 101, to: 160, pace: 380, grade: 0, heartRate: 147)).isEmpty)
+        let again = cues(S.drive(&e2, from: 161, to: 240, pace: 380, grade: 0, heartRate: 150))
+        XCTAssertEqual(again.map(\.time), [175])
     }
 
     func testRecoveryUsesCeilingEvenWhenPacePrimary() {
@@ -232,9 +248,9 @@ final class CueEngineTests: XCTestCase {
         // 148: under the ceiling but inside the 3 bpm margin: still counted as over, no re-entry.
         S.drive(&e, from: 101, to: 150, pace: 380, grade: 0, heartRate: 148)
         let again = cues(S.drive(&e, from: 151, to: 215, pace: 380, grade: 0, heartRate: 156))
-        // No new "confirmation", only reminders: 148 still counts as over (inside the margin), and the
-        // reminder needs HR above the ceiling itself, so the first comes at 151 and the next 60 s later.
-        XCTAssertEqual(again.map(\.time), [151, 211])
+        // No new "confirmation", only the one reminder: 148 still counts as over (inside the margin), and the
+        // reminder needs HR at the ceiling itself and 90 s since the first cue, so it comes at 175.
+        XCTAssertEqual(again.map(\.time), [175])
         // Properly back under (146) for 25 s, then over again: a fresh cue after another 25 s.
         var e2 = CueEngine(segment: S.easySegment(ceiling: 150))
         S.drive(&e2, from: 0, to: 100, pace: 380, grade: 0, heartRate: 156)
@@ -278,13 +294,13 @@ final class CueEngineTests: XCTestCase {
         XCTAssertTrue(cues(all).isEmpty)
     }
 
-    func testHoveringAtTheEdgeGivesAtMostOneCuePerMinute() {
-        // 30 s just past the leaving edge, 30 s between the band edge and the leaving edge, repeat.
+    func testHoveringAtTheEdgeGivesAtMostOneCuePerReminderInterval() {
+        // 30 s just past the leaving edge (343.7), 30 s between the band edge and the leaving edge, repeat.
         var e = CueEngine(segment: seg)
         var all: [CueDecision] = []
         for t in 0...600 {
             let time = Double(t)
-            let pace: Double = (t / 30) % 2 == 0 ? 345 : 338
+            let pace: Double = (t / 30) % 2 == 0 ? 348 : 340
             all.append(e.evaluate(time: time, pace: S.estimate(pace: pace, time: time), grade: S.grade(0, time: time), heartRate: nil))
         }
         let fired = cues(all)
@@ -292,19 +308,20 @@ final class CueEngineTests: XCTestCase {
         for (a, b) in zip(fired, fired.dropFirst()) {
             XCTAssertGreaterThanOrEqual(b.time - a.time, e.config.repeatSeconds, "a cue at \(a.time) and \(b.time)")
         }
-        // Stated window: at most one cue in any 60 s.
-        for start in stride(from: 0.0, through: 540, by: 1) {
-            XCTAssertLessThanOrEqual(fired.filter { $0.time >= start && $0.time < start + 60 }.count, 1)
+        // Stated window: at most one cue in any 90 s (the reminder interval), and two in all (one reminder).
+        for start in stride(from: 0.0, through: 510, by: 1) {
+            XCTAssertLessThanOrEqual(fired.filter { $0.time >= start && $0.time < start + 90 }.count, 1)
         }
+        XCTAssertLessThanOrEqual(fired.count, 2)
     }
 
     func testReentryMustBeSustainedAndAReminderFollowsWhileStillOut() {
         var e = CueEngine(segment: seg)
-        S.drive(&e, from: 0, to: 90, pace: 380)               // cue at 85
+        S.drive(&e, from: 0, to: 90, pace: 385)               // cue at 85
         S.drive(&e, from: 91, to: 110, pace: 332)             // 20 s back inside: not yet "in"
-        let again = cues(S.drive(&e, from: 111, to: 200, pace: 380))
-        // Still counted as out, so the next cue is the reminder (60 s after 85), not a new confirmation.
-        XCTAssertEqual(again.map(\.time), [145])
+        let again = cues(S.drive(&e, from: 111, to: 200, pace: 385))
+        // Still counted as out, so the next cue is the reminder (90 s after 85), not a new confirmation.
+        XCTAssertEqual(again.map(\.time), [175])
         // After 25 s sustained inside, a later deviation is a fresh one (needs min gap and 25 s).
         var e2 = CueEngine(segment: seg)
         S.drive(&e2, from: 0, to: 90, pace: 380)
@@ -416,5 +433,68 @@ final class CueEngineTests: XCTestCase {
         XCTAssertEqual(CueAction.slowDown.phrase, "Slow down")
         XCTAssertEqual(CueAction.easeOff.phrase, "Ease off")
         for a in CueAction.allCases { XCTAssertLessThanOrEqual(a.phrase?.count ?? 0, 10) }
+    }
+
+    // MARK: reading interval and sparse heart rate
+
+    /// Held time must be measured correctly whatever the gap between readings: a runner far too slow gets the
+    /// "speed up" cue and its one reminder at 1, 3, 4, 5 and 6 s between readings.
+    func testPaceCuesFireAtAnyReadingInterval() {
+        for step in [1.0, 2, 3, 4, 5, 6] {
+            var e = CueEngine(segment: S.paceSegment())
+            let fired = cues(S.drive(&e, from: 0, to: 600, pace: 380, grade: 0, step: step))
+            XCTAssertEqual(fired.first?.action, .speedUp, "step \(step)")
+            XCTAssertLessThanOrEqual(fired.first?.time ?? .infinity, 85 + 2 * step, "step \(step)")
+            XCTAssertEqual(fired.count, 2, "one cue and one reminder, step \(step)")
+        }
+    }
+
+    func testHeartRateCuesFireAtAnyReadingInterval() {
+        for step in [1.0, 2, 3, 4, 5, 6] {
+            var e = CueEngine(segment: S.easySegment(ceiling: 150))
+            let fired = cues(S.drive(&e, from: 0, to: 600, pace: 380, grade: 0, heartRate: 165, step: step))
+            XCTAssertEqual(fired.first?.action, .easeOff, "step \(step)")
+            XCTAssertLessThanOrEqual(fired.first?.time ?? .infinity, 85 + 2 * step, "step \(step)")
+            XCTAssertEqual(fired.count, 2, "one cue and one reminder, step \(step)")
+        }
+    }
+
+    /// A watch reports heart rate on every 5th or 10th reading. The last finite value is carried forward for
+    /// `maxEstimateAgeSeconds`, like pace, so the ceiling cue still fires.
+    func testSparseHeartRateStillCues() {
+        for every in [5, 10] {
+            var e = CueEngine(segment: S.easySegment(ceiling: 150))
+            let fired = cues(S.drive(&e, from: 0, to: 600, pace: 380, grade: 0, heartRate: 165, heartRateEvery: every))
+            XCTAssertEqual(fired.first?.action, .easeOff, "every \(every)")
+            XCTAssertLessThanOrEqual(fired.first?.time ?? .infinity, 95, "every \(every)")
+            XCTAssertEqual(fired.count, 2, "every \(every)")
+        }
+    }
+
+    /// Heart rate older than `maxEstimateAgeSeconds` is not carried: a gap longer than that restarts judging.
+    func testHeartRateNotCarriedPastItsMaximumAge() {
+        var e = CueEngine(segment: S.easySegment(ceiling: 150))
+        S.drive(&e, from: 0, to: 50, pace: 380, grade: 0, heartRate: 165)
+        // 40 s with no heart rate at all: nothing carried, nothing cued.
+        XCTAssertTrue(cues(S.drive(&e, from: 51, to: 90, pace: 380, grade: 0, heartRate: nil)).isEmpty)
+        // And the window restarts: 25 s of heart rate again are needed.
+        let again = cues(S.drive(&e, from: 91, to: 160, pace: 380, grade: 0, heartRate: 165))
+        XCTAssertEqual(again.first?.time, 116)
+    }
+
+    /// While the grade is changing the band is widened by `gradeChangeWidening` times the grade's range over
+    /// the last `gradeChangeWindowSeconds`, on top of the fixed `gradeUncertainty`; judging never stops.
+    func testBandIsWidenedWhileTheGradeChanges() {
+        var e = CueEngine(segment: S.paceSegment())
+        let steady = S.drive(&e, from: 0, to: 80, pace: 335, grade: 0.04)
+        XCTAssertEqual(steady.last?.reason.gradeUncertainty ?? .nan, 0.0025, accuracy: 1e-12)
+        var t = 81.0
+        var last: CueDecision?
+        for g in stride(from: 0.04, through: 0.0, by: -0.004) {
+            last = e.evaluate(time: t, pace: S.estimate(pace: 335, time: t), grade: S.grade(g, time: t), heartRate: nil)
+            t += 1
+        }
+        // The grade fell 4 points within 15 s: 0.0025 + 0.25 * 0.04.
+        XCTAssertEqual(last?.reason.gradeUncertainty ?? .nan, 0.0025 + 0.25 * 0.04, accuracy: 1e-9)
     }
 }
