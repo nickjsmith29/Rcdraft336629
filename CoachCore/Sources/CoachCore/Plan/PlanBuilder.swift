@@ -517,12 +517,13 @@ public enum PlanBuilder {
             if distance <= BlendedPredictor.shortTargetLimit {
                 predicted = RacePredictor.riegel(knownMeters: a.distanceMeters, knownSeconds: a.seconds, targetMeters: distance)
             } else {
+                let isMarathon = RaceCategory.isMarathonDistance(meters: distance)
                 // Marathon (3.9; Vickers-Vertosick predicts a marathon time, so only
                 // at marathon distance, #30): Vickers-Vertosick from the anchor and weekly miles,
                 // the miles estimated from weekly time at easy pace. Easy pace is
                 // slower than average training pace, so this underestimates miles
                 // and errs slow.
-                if RaceCategory.isMarathonDistance(meters: distance), let e = easyPace {
+                if isMarathon, let e = easyPace {
                     let miles = recentWeekly / e / Distance.mile * 1000
                     predicted = VickersVertosick.marathonSeconds(raceMeters: a.distanceMeters, raceSeconds: a.seconds,
                                                                 weeklyMiles: miles)
@@ -532,9 +533,8 @@ public enum PlanBuilder {
                     // bound the goal pace, which makes the 3% cap lenient, not strict.
                     optimisticBound = RacePredictor.riegel(knownMeters: a.distanceMeters, knownSeconds: a.seconds,
                                                            targetMeters: distance)
-                    let isMarathon = RaceCategory.isMarathonDistance(meters: distance)
                     notes.append(isMarathon ? "No marathon prediction could be made (it needs predictedRaceSeconds, or an anchor from 5K to the half marathon and an easy pace), so race pace is only held back from a goal far faster than plain Riegel suggests."
-                                 : "No race-time prediction could be made for this distance (the predictors cover up to the half marathon and the marathon itself, and it needs predictedRaceSeconds), so race pace is only held back from a goal far faster than plain Riegel suggests.")
+                                 : "No race-time prediction is made for this distance (predictions cover up to the half marathon and the marathon), so race pace is only held back from a goal far faster than plain Riegel suggests.")
                 }
             }
         }

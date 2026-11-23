@@ -122,6 +122,7 @@ final class MarathonDistanceOnlyTests: XCTestCase {
                           fitnessAnchor: RaceEquivalent(distanceMeters: Distance.fiveK, seconds: 25 * 60))
         let r = PlanBuilder.build(i, history: [], timeZone: utc)
         let p = try XCTUnwrap(r.plan, "\(r.issues)")
+        XCTAssertTrue(p.notes.contains { $0.contains("No race-time prediction is made for this distance") }, "\(p.notes)")
         XCTAssertFalse(p.notes.joined(separator: " ").lowercased().contains("marathon prediction"), "\(p.notes)")
         let m = PlanBuilder.build(PlanInput(raceDistanceMeters: Distance.marathon, raceDate: race, goalSeconds: 13_500, startDate: planMonday,
                           trainingDays: Set(days), longRunDay: .saturday, recentWeeklySeconds: 240 * 60,
@@ -129,6 +130,40 @@ final class MarathonDistanceOnlyTests: XCTestCase {
                           fitnessAnchor: RaceEquivalent(distanceMeters: Distance.fiveK, seconds: 25 * 60)),
                                   history: [], timeZone: utc)
         XCTAssertTrue(try XCTUnwrap(m.plan).notes.joined(separator: " ").contains("No marathon prediction"))
+    }
+
+    /// Anchor and easy pace, no predictedRaceSeconds and no goal: the race session
+    /// length then shows which prediction path ran.
+    private func plan(distance: Double) throws -> TrainingPlan {
+        let days: [PlanWeekday] = [.tuesday, .thursday, .saturday]
+        let race = planMonday.addingTimeInterval(Double(15 * 7 + 6) * 86_400 + 8 * 3600)
+        let i = PlanInput(raceDistanceMeters: distance, raceDate: race, startDate: planMonday,
+                          trainingDays: Set(days), longRunDay: .saturday, recentWeeklySeconds: 240 * 60,
+                          heartRateZones: HRZones(lthr: 168), easyPace: EasyPaceSample(secondsPerKm: 360, heartRate: 140),
+                          fitnessAnchor: RaceEquivalent(distanceMeters: Distance.fiveK, seconds: 25 * 60))
+        let r = PlanBuilder.build(i, history: [], timeZone: utc)
+        return try XCTUnwrap(r.plan, "\(r.issues)")
+    }
+
+    private func raceSeconds(_ p: TrainingPlan) throws -> Double {
+        try XCTUnwrap(p.workouts.first { $0.kind == .race }).durationSeconds
+    }
+
+    func testVickersVertosickRunsOnlyAtMarathonDistance() throws {
+        let note = "No race-time prediction is made for this distance"
+        for d in [25_000.0, 30_000, 41_900] {
+            let p = try plan(distance: d)
+            XCTAssertTrue(p.notes.contains { $0.contains(note) }, "\(d): \(p.notes)")
+            XCTAssertFalse(p.notes.joined().contains("No marathon prediction"), "\(d)")
+            XCTAssertEqual(try raceSeconds(p), d / 1000 * 360, accuracy: 1, "\(d)")
+        }
+        let m = try plan(distance: Distance.marathon)
+        XCTAssertFalse(m.notes.joined().contains("No marathon prediction"), "\(m.notes)")
+        XCTAssertFalse(m.notes.joined().contains(note))
+        let miles = 240 * 60 / 360.0 * 1000 / Distance.mile
+        let vv = try XCTUnwrap(VickersVertosick.marathonSeconds(raceMeters: Distance.fiveK, raceSeconds: 25 * 60,
+                                                                weeklyMiles: miles))
+        XCTAssertEqual(try raceSeconds(m), vv, accuracy: 1)
     }
 
     func testMarathonPlanKeepsTheExtraRoomAndTheCap() throws {
