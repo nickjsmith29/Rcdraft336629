@@ -1,0 +1,82 @@
+# XcodeGen spec. Generate the project with: xcodegen generate
+# Never edit RunningCoach.xcodeproj by hand; it is not committed.
+name: RunningCoach
+options:
+  bundleIdPrefix: ${BUNDLE_ID_PREFIX}
+  deploymentTarget:
+    iOS: "17.0"
+    watchOS: "10.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    DEVELOPMENT_TEAM: ${APPLE_TEAM_ID}
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.0"
+    CODE_SIGN_STYLE: Manual
+    VERSIONING_SYSTEM: apple-generic
+packages:
+  CoachCore:
+    path: CoachCore
+targets:
+  RunningCoach:
+    type: application
+    platform: iOS
+    sources: [App/Sources]
+    dependencies:
+      - package: CoachCore
+      - target: RunningCoachWatch
+    entitlements:
+      path: App/RunningCoach.entitlements
+      properties:
+        com.apple.developer.healthkit: true
+        com.apple.developer.healthkit.access: []
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: Running Coach
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        ITSAppUsesNonExemptEncryption: false
+        NSHealthShareUsageDescription: Running Coach reads your runs, heart rate, HRV, resting heart rate, sleep and running metrics to build and adapt your training plan.
+        NSHealthUpdateUsageDescription: Running Coach saves the workouts you record with it to Apple Health.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ${BUNDLE_ID_PREFIX}.runningcoach
+        TARGETED_DEVICE_FAMILY: "1"
+  RunningCoachWatch:
+    type: application
+    platform: watchOS
+    sources: [WatchApp/Sources]
+    dependencies:
+      - package: CoachCore
+    entitlements:
+      path: WatchApp/RunningCoachWatch.entitlements
+      properties:
+        com.apple.developer.healthkit: true
+        com.apple.developer.healthkit.access: []
+    info:
+      path: WatchApp/Info.plist
+      properties:
+        CFBundleDisplayName: Running Coach
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        WKApplication: true
+        WKCompanionAppBundleIdentifier: ${BUNDLE_ID_PREFIX}.runningcoach
+        ITSAppUsesNonExemptEncryption: false
+        NSHealthShareUsageDescription: Running Coach reads your heart rate and running metrics during workouts to coach you live.
+        NSHealthUpdateUsageDescription: Running Coach saves your runs to Apple Health.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ${BUNDLE_ID_PREFIX}.runningcoach.watchkitapp
+        TARGETED_DEVICE_FAMILY: "4"
+        SKIP_INSTALL: true
+schemes:
+  RunningCoach:
+    build:
+      targets:
+        RunningCoach: all
+    archive:
+      config: Release

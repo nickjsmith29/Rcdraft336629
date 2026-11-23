@@ -1,0 +1,42 @@
+name: CoachCore tests
+
+# Kept lean so it also fits a private repo's free Actions allowance (about
+# 2,000 Linux minutes a month) whenever the repo is private, so this runs
+# only where a result is needed:
+# - on pull requests that are ready for review (drafts are skipped; coders
+#   run the suite locally in Docker first) and that touch more than docs;
+# - a newer push to the same PR cancels the run it replaces;
+# - not again on main after a merge: merges are squashed from a head that
+#   already contains main (the merge script refuses a head that is behind),
+#   so the PR's run already tested what lands. Run it by hand if needed.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+  workflow_dispatch:
+
+concurrency:
+  group: coachcore-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    container: swift:5.10
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: CoachCore/.build
+          key: coachcore-${{ runner.os }}-${{ hashFiles('CoachCore/Package.swift', 'CoachCore/Package.resolved') }}
+          restore-keys: coachcore-${{ runner.os }}-
+      - name: Run CoachCore tests
+        working-directory: CoachCore
+        run: swift test

@@ -1,0 +1,59 @@
+default_platform(:ios)
+
+APP_ID = "#{ENV.fetch('BUNDLE_ID_PREFIX')}.runningcoach"
+WATCH_ID = "#{APP_ID}.watchkitapp"
+
+platform :ios do
+  desc "Build, sign and upload a TestFlight build (runs in CI)"
+  lane :beta do
+    setup_ci
+
+    api_key = app_store_connect_api_key(
+      key_id: ENV.fetch("ASC_KEY_ID"),
+      issuer_id: ENV.fetch("ASC_ISSUER_ID"),
+      key_content: ENV.fetch("ASC_KEY_P8"),
+      in_house: false
+    )
+
+    # First run: set MATCH_READONLY=false (the workflow's "first_setup" input)
+    # so match creates the certificate and profiles. Later runs are read-only.
+    match(
+      type: "appstore",
+      app_identifier: [APP_ID, WATCH_ID],
+      api_key: api_key,
+      readonly: ENV.fetch("MATCH_READONLY", "true") != "false"
+    )
+
+    build_number = ENV.fetch("BUILD_NUMBER", "1")
+    increment_build_number(build_number: build_number, xcodeproj: "RunningCoach.xcodeproj")
+
+    update_code_signing_settings(
+      path: "RunningCoach.xcodeproj",
+      use_automatic_signing: false,
+      targets: ["RunningCoach"],
+      bundle_identifier: APP_ID,
+      profile_name: "match AppStore #{APP_ID}",
+      code_sign_identity: "Apple Distribution"
+    )
+    update_code_signing_settings(
+      path: "RunningCoach.xcodeproj",
+      use_automatic_signing: false,
+      targets: ["RunningCoachWatch"],
+      bundle_identifier: WATCH_ID,
+      profile_name: "match AppStore #{WATCH_ID}",
+      code_sign_identity: "Apple Distribution"
+    )
+
+    build_app(
+      project: "RunningCoach.xcodeproj",
+      scheme: "RunningCoach",
+      configuration: "Release",
+      export_method: "app-store"
+    )
+
+    upload_to_testflight(
+      api_key: api_key,
+      skip_waiting_for_build_processing: true
+    )
+  end
+end
