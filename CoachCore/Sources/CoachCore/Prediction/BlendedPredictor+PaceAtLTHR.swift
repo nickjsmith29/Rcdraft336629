@@ -12,7 +12,8 @@ extension BlendedPredictor {
     /// measure the pace again with a lookback no longer than the predictor's.
     /// Its evidence (stretches, total time, dates, spread) lives on
     /// `PaceAtLTHR`; the threshold `MethodEstimate.evidence` stays empty
-    /// because it lists best efforts only.
+    /// because it lists best efforts only; the pace is also on
+    /// `MethodEstimate.inputs`.
     public static func predict(
         targetMeters: Double,
         efforts: [BestEffort],

@@ -273,4 +273,61 @@ final class BlendedPredictorTests: XCTestCase {
         if case .failure(let reason) = result { return reason }
         return nil
     }
+
+    // MARK: Inputs, short targets, recency boundary (#9)
+
+    func testEveryMethodReportsItsInputs() throws {
+        let efforts = [effort(1000, 200), effort(3000, 700), effort(Distance.tenK, 3150)]
+        let short = BlendedPredictor.predict(targetMeters: 5000, efforts: efforts, asOf: now, secondsPerMeterAtLTHR: 0.25)
+        let riegel = try XCTUnwrap(estimate(short, .riegel))
+        XCTAssertEqual(riegel.inputs, MethodInputs(riegelExponent: 1.07))
+        let cs = try XCTUnwrap(estimate(short, .criticalSpeed))
+        XCTAssertEqual(try XCTUnwrap(cs.inputs.criticalSpeedMetersPerSecond), 4, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(cs.inputs.dPrimeMeters), 200, accuracy: 1e-6)
+        let threshold = try XCTUnwrap(estimate(short, .threshold))
+        XCTAssertEqual(threshold.inputs, MethodInputs(secondsPerMeterAtLTHR: 0.25, riegelExponent: 1.07))
+
+        let marathon = BlendedPredictor.predict(targetMeters: Distance.marathon, efforts: [effort(Distance.tenK, 2700)],
+                                                asOf: now, typicalWeeklyMeters: 50_000)
+        let vv = try XCTUnwrap(estimate(marathon, .vickersVertosick))
+        XCTAssertEqual(vv.inputs, MethodInputs(weeklyMeters: 50_000, riegelExponent: 1.07))
+    }
+
+    func testTargetsBelowOneMileAreRefused() throws {
+        XCTAssertEqual(BlendedPredictor.minimumTargetMeters, 1609.344)
+        let efforts = [effort(3000, 700), effort(Distance.fiveK, 1200)]
+        let short = BlendedPredictor.predict(targetMeters: 800, efforts: efforts, asOf: now, secondsPerMeterAtLTHR: 0.25)
+        XCTAssertNil(short.range)
+        XCTAssertTrue(short.estimates.isEmpty)
+        XCTAssertEqual(short.skipped.count, PredictionMethod.allCases.count)
+        XCTAssertTrue(short.skipped.allSatisfy { $0.reason == .targetOutOfRange })
+        let justBelow = BlendedPredictor.predict(targetMeters: Distance.mile - 0.001, efforts: efforts, asOf: now)
+        XCTAssertNil(justBelow.range)
+        let mile = BlendedPredictor.predict(targetMeters: Distance.mile, efforts: efforts, asOf: now)
+        XCTAssertNotNil(mile.range)
+        XCTAssertNotNil(estimate(mile, .riegel))
+    }
+
+    func testSingleMethodBlendForShortTargetIsPlusMinusTwoPercent() throws {
+        // One 5K in 20:00 only: Riegel is the sole method. 3000 m: 1200 * 0.6^1.07 = 694.71 s (checked in Python).
+        let p = BlendedPredictor.predict(targetMeters: 3000, efforts: [effort(Distance.fiveK, 1200)], asOf: now)
+        XCTAssertEqual(p.estimates.map(\.method), [.riegel])
+        let range = try XCTUnwrap(p.range)
+        let expected = 1200 * pow(0.6, 1.07)
+        XCTAssertEqual(range.central, expected, accuracy: 1e-6)
+        XCTAssertEqual(range.low, expected * 0.98, accuracy: 1e-6)
+        XCTAssertEqual(range.high, expected * 1.02, accuracy: 1e-6)
+        // One mile from the same effort: the same rule at the lower bound.
+        let mile = try XCTUnwrap(BlendedPredictor.predict(targetMeters: Distance.mile, efforts: [effort(Distance.fiveK, 1200)],
+                                                          asOf: now).range)
+        XCTAssertEqual(mile.low, mile.central * 0.98, accuracy: 1e-6)
+        XCTAssertEqual(mile.high, mile.central * 1.02, accuracy: 1e-6)
+    }
+
+    func testEffortExactlyAtLookbackLimitIsIncluded() throws {
+        let p = BlendedPredictor.predict(targetMeters: Distance.tenK, efforts: [effort(Distance.fiveK, 1200, daysAgo: 120)], asOf: now)
+        XCTAssertNotNil(estimate(p, .riegel))
+        let older = BlendedPredictor.predict(targetMeters: Distance.tenK, efforts: [effort(Distance.fiveK, 1200, daysAgo: 120.01)], asOf: now)
+        XCTAssertNil(estimate(older, .riegel))
+    }
 }
