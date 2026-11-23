@@ -32,7 +32,8 @@ public enum BaselinePlanMapping {
                 EasyPaceSample(secondsPerKm: $0.secondsPerKilometer, heartRate: $0.heartRate)
             },
             fitnessAnchor: fitnessAnchor(from: baseline, raceDistanceMeters: meters),
-            predictedRaceSeconds: predictedRaceSeconds(from: baseline, raceDistanceMeters: meters))
+            predictedRaceSeconds: predictedRaceSeconds(from: baseline, raceDistanceMeters: meters),
+            anchorEfforts: anchorEfforts(from: baseline))
     }
 
     /// The baseline's runs as plan history for the builder and the guardrail
@@ -105,16 +106,19 @@ public enum BaselinePlanMapping {
     /// slower, which errs on the safe side.
     public static func fitnessAnchor(from baseline: BaselineReport, raceDistanceMeters: Double) -> RaceEquivalent? {
         guard raceDistanceMeters.isFinite, raceDistanceMeters > 0 else { return nil }
-        let candidates = anchorCandidates(baseline)
-        let races = candidates.filter(\.isRace)
-        let pool = races.isEmpty ? candidates : races
-        let target = log(raceDistanceMeters)
-        let best = pool.min { a, b in
-            let da = abs(log(a.effort.distanceMeters) - target), db = abs(log(b.effort.distanceMeters) - target)
-            if abs(da - db) > 1e-12 { return da < db }
-            return a.effort.date > b.effort.date
+        return AnchorEffort.pick(anchorEfforts(from: baseline), raceDistanceMeters: raceDistanceMeters)?.anchor
+    }
+
+    /// Every effort that qualifies as an anchor (`anchorCandidates`) with its
+    /// date and whether it is a marked race, for the plan builder's break
+    /// rule (SPEC 3.5 rule 4): it tells an anchor from before a break from
+    /// one after it. A marked time trial is not one (`markedRaces` takes
+    /// `.race` only).
+    public static func anchorEfforts(from baseline: BaselineReport) -> [AnchorEffort] {
+        anchorCandidates(baseline).map {
+            AnchorEffort(anchor: RaceEquivalent(distanceMeters: $0.effort.distanceMeters, seconds: $0.effort.seconds),
+                         date: $0.effort.date, isMarkedRace: $0.isRace)
         }
-        return best.map { RaceEquivalent(distanceMeters: $0.effort.distanceMeters, seconds: $0.effort.seconds) }
     }
 
     /// The current-fitness prediction for the goal distance: the central value

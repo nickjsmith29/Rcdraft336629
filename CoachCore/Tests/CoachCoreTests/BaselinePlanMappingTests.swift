@@ -149,3 +149,39 @@ extension BaselinePlanMappingTests {
         XCTAssertEqual(BaselinePlanMapping.raceSeconds(raceA2, elapsed: nil), raceA2.movingSeconds)
     }
 }
+
+extension BaselinePlanMappingTests {
+    func testAnchorEffortsCarryTheirDatesAndRaceMarks() throws {
+        let report = GoalFixture.fixtureReport()
+        let input = BaselinePlanMapping.planInput(settings: GoalFixture.settings(), baseline: report, startDate: GoalFixture.today)
+        let efforts = BaselinePlanMapping.anchorEfforts(from: report)
+        XCTAssertEqual(input.anchorEfforts, efforts)
+        XCTAssertFalse(efforts.isEmpty)
+        // The two marked races (race-a, race-b) are the marked ones, with their runs' dates.
+        let marked = efforts.filter(\.isMarkedRace)
+        XCTAssertEqual(marked.count, 2)
+        for id in ["race-a", "race-b"] {
+            let run = try XCTUnwrap(report.runs.first { $0.activityID == id })
+            XCTAssertTrue(marked.contains { $0.date == run.start }, id)
+        }
+        XCTAssertTrue(efforts.allSatisfy(\.isValid))
+        // The anchor is one of them, chosen as before.
+        for meters in [Distance.fiveK, Distance.tenK, Distance.halfMarathon, Distance.marathon] {
+            let anchor = try XCTUnwrap(BaselinePlanMapping.fitnessAnchor(from: report, raceDistanceMeters: meters))
+            XCTAssertTrue(efforts.contains { $0.anchor == anchor }, "\(meters)")
+        }
+        // Nothing to anchor on means no dated efforts either.
+        let empty = BaselineBuilder.build(activities: [], options: BaselineOptions(asOf: GoalFixture.today, timeZone: GoalFixture.timeZone))
+        XCTAssertEqual(BaselinePlanMapping.anchorEfforts(from: empty), [])
+    }
+
+    func testAMarkedTimeTrialIsNotADatedAnchorEffort() throws {
+        // A time trial is a threshold session in the history but no anchor candidate, so it ends no factor.
+        let days: [PlanWeekday: Double] = [.monday: 30, .wednesday: 30, .saturday: 70]
+        let tt = BaselineFixture.run("tt", start: BaselineFixture.date(day: 4 * 7 + 4), seconds: 30 * 60, speed: 3.9,
+                                     hr: { _ in 170 }, cadence: 170)
+        let report = GoalFixture.report(weeks: 6, days: days, extra: [tt], marks: [EffortMark(activityID: "tt", kind: .timeTrialLast20Min)])
+        let run = try XCTUnwrap(report.runs.first { $0.activityID == "tt" })
+        XCTAssertFalse(BaselinePlanMapping.anchorEfforts(from: report).contains { $0.date == run.start && $0.isMarkedRace })
+    }
+}

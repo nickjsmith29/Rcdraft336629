@@ -242,6 +242,13 @@ struct TargetModel {
         return pace.isFinite && pace > 0 ? pace : nil
     }
 
+    /// The same model with other easy, threshold and VO2max paces (the paces
+    /// after a break, `ReturnPaceSchedule`); the race pace stays.
+    func withPaces(easy: Double?, threshold: Double?, vo2max: Double?) -> TargetModel {
+        TargetModel(zones: zones, category: category, easyPace: easy, thresholdPace: threshold, vo2maxPace: vo2max,
+                    racePace: racePace)
+    }
+
     func heartRate(_ intensity: WorkoutIntensity) -> HeartRateTarget {
         let z = zones
         func t(_ lo: HRZone, _ hi: HRZone, floor: HRZone?, ceiling: HRZone?) -> HeartRateTarget {
