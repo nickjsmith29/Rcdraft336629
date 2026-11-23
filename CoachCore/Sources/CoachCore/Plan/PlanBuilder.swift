@@ -2391,10 +2391,10 @@ private struct Builder {
         // days (the count loop above), to the quality sessions' easy cool-down,
         // so the hard minutes stay as planned: each quality session may grow up
         // to the week's long run, the long-run cap and the max session length
-        // (`easyCap`). Only what still doesn't fit shrinks the week. A
-        // heuristic ordering: SPEC F3 says only that the week plans smaller
-        // when its volume doesn't fit (F3, #23). It never goes to the long
-        // run, which would only raise the limit it was held to.
+        // (`easyCap`). Only what still doesn't fit shrinks the week. This
+        // ordering is SPEC F3 (owner's decision "Keep long workout days",
+        // #70; a heuristic). It never goes to the long run, which would only
+        // raise the limit it was held to.
         let heldBack = cutByLimit
         var extraEasy = [Double](repeating: 0, count: q)
         if cutByLimit >= 60 {
