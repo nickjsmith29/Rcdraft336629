@@ -291,7 +291,7 @@ public struct DebriefFacts: Equatable, Sendable {
                     add(.painScore, score, .painScore)
                     add(.painScaleMax, Double(PainCheckIn.validScores.upperBound), .painScore)
                 }
-            case .qualitySwappedToEasy, .longRunSwappedToEasy, .sessionShortened, .sessionRested, .sessionRegrown:
+            case .returnPaces, .qualitySwappedToEasy, .longRunSwappedToEasy, .sessionShortened, .sessionRested, .sessionRegrown:
                 add(.sessions, Double(ids.count), .count)
             case .painStop:
                 if let stop = outcome.state.painStop { add(.stopSince, stop.since.timeIntervalSince1970, .date) }

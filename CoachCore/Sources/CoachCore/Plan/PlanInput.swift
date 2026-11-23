@@ -49,7 +49,7 @@ public struct PlanInput: Equatable, Sendable {
     /// Names of the input values, for `PlanBuildIssue.invalidValue`.
     public enum Field: String, Equatable, Hashable, Sendable {
         case raceDistanceMeters, goalSeconds, maxSessionSeconds, recentWeeklySeconds,
-             recentLongRunSeconds, easyPace, fitnessAnchor, predictedRaceSeconds
+             recentLongRunSeconds, easyPace, fitnessAnchor, predictedRaceSeconds, anchorEfforts
     }
 
     // MARK: Goal (F2)
@@ -103,6 +103,16 @@ public struct PlanInput: Equatable, Sendable {
     /// Vickers-Vertosick, which needs an anchor of 5K or more and `easyPace`.
     /// Pass it for a marathon whenever the baseline has one.
     public var predictedRaceSeconds: Double?
+    /// The efforts that qualify as an anchor, with their dates and whether
+    /// each is a marked race (`BaselinePlanMapping.anchorEfforts`). The
+    /// builder reads them only for the paces after a break (SPEC 3.5 rule 4):
+    /// the anchor from before the break (no training pace may be faster than
+    /// it through the third week back) and a marked race after the break,
+    /// which becomes the anchor and ends the return factor. Leaving a marked
+    /// race after a longer break out means the factor holds (errs slow). Empty means no
+    /// dated efforts are known: `fitnessAnchor` is then treated as an anchor
+    /// from before the break, so the factor applies to it in full.
+    public var anchorEfforts: [AnchorEffort]
 
     public init(raceDistanceMeters: Double,
                 raceDate: Date,
@@ -116,7 +126,8 @@ public struct PlanInput: Equatable, Sendable {
                 heartRateZones: HRZones?,
                 easyPace: EasyPaceSample? = nil,
                 fitnessAnchor: RaceEquivalent? = nil,
-                predictedRaceSeconds: Double? = nil) {
+                predictedRaceSeconds: Double? = nil,
+                anchorEfforts: [AnchorEffort] = []) {
         self.raceDistanceMeters = raceDistanceMeters
         self.raceDate = raceDate
         self.goalSeconds = goalSeconds
@@ -130,5 +141,6 @@ public struct PlanInput: Equatable, Sendable {
         self.easyPace = easyPace
         self.fitnessAnchor = fitnessAnchor
         self.predictedRaceSeconds = predictedRaceSeconds
+        self.anchorEfforts = anchorEfforts
     }
 }

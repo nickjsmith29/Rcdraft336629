@@ -185,9 +185,16 @@ public struct WorkoutPrescription: Equatable, Hashable, Sendable {
     /// `PlanFormatting.purpose(of:units:)`; `purpose` holds the metric
     /// sentence. Nil on every other session.
     public let raceDistanceMeters: Double?
+    /// The Daniels return factor (SPEC 3.5 rule 4, #28) already applied to the
+    /// session's pace targets taken from the fitness anchor or the easy-pace
+    /// sample (each divided by it), or nil when none is (the same as 1.0).
+    /// Set by the plan builder and the adaptation engine, so that either can
+    /// change the factor later without applying it twice.
+    public let returnPaceFactor: Double?
 
     public init(purpose: String, phase: PlanPhase, segments: [WorkoutSegment], rules: [PlanRule],
-                raceDistanceMeters: Double? = nil) {
+                raceDistanceMeters: Double? = nil, returnPaceFactor: Double? = nil) {
+        self.returnPaceFactor = returnPaceFactor
         self.purpose = purpose
         self.phase = phase
         self.segments = segments

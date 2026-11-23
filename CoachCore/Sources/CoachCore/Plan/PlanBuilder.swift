@@ -258,7 +258,11 @@ public enum PlanBuildResult: Equatable, Sendable {
 ///   long run, when given, caps every session of that week at about 9% over it.
 /// - **Targets.** Heart rate from the runner's zones for every segment; pace
 ///   (grade-adjusted) from the easy-pace sample, the fitness anchor (Riegel,
-///   3.9) and the goal or prediction, only when given.
+///   3.9) and the goal or prediction, only when given. After a break
+///   (3.5 rule 4, #28) the paces taken from the anchor or the easy-pace
+///   sample are divided by the Daniels return factor for the weeks it covers
+///   (`ReturnPaceSchedule`); heart-rate targets, the goal, the prediction and
+///   race pace are unchanged.
 /// - **Check.** The finished plan runs through `GuardrailChecker` with the
 ///   history; a failure comes back as `PlanBuildIssue.failsGuardrails`.
 public enum PlanBuilder {
@@ -443,6 +447,7 @@ public enum PlanBuilder {
             let okSpeed = okDistance && okTime && BlendedPredictor.plausibleSpeed.contains(a.distanceMeters / a.seconds)
             if !okSpeed { issues.append(.invalidValue(.fitnessAnchor)) }
         }
+        if !input.anchorEfforts.allSatisfy(\.isValid) { issues.append(.invalidValue(.anchorEfforts)) }
 
         // Volume (F1 baseline).
         var recentWeekly = 0.0
@@ -1117,6 +1122,13 @@ private struct Builder {
     let maxSession: Double
     let raceDay: Int
     var ledger: PlanBuilder.LedgerSet
+    /// The latest break that still matters to the training paces (3.5 rule 4, #28), or nil.
+    let returnPaces: ReturnPaceSchedule?
+    /// The pace targets for the week being drafted: `v.targets`, or under the
+    /// break's factor in the weeks it covers (`ReturnPaceSchedule.targets`).
+    var paceTargets: TargetModel
+    /// The return factor applied to `paceTargets` (nil: none), recorded on each session's prescription.
+    var paceFactor: Double?
     /// The start's week is history but not over (#48): the plan is provisional.
     let startWeekOpen: Bool
     /// Mean weekly volume of the last (up to 4) complete history weeks before the start week, if any.
@@ -1164,6 +1176,12 @@ private struct Builder {
                                           recentWeekly: v.recentWeekly, limits: limits)
         let complete = weeks.filter { $0.weekStart < startWeek }.suffix(4).compactMap { $0.volume(.time) }
         self.historyMean = complete.isEmpty ? nil : complete.reduce(0, +) / Double(complete.count)
+        self.returnPaces = ReturnPaceSchedule.latest(history: history, efforts: input.anchorEfforts,
+                                                     raceDistanceMeters: input.raceDistanceMeters,
+                                                     startDate: input.startDate, firstMonday: v.firstMonday,
+                                                     timeZone: timeZone, limits: limits)
+        self.paceTargets = v.targets
+        self.paceFactor = nil
         let cal = PlanCalendar.calendar(timeZone: timeZone)
         self.hardDays = history.filter { $0.kind.isQuality || $0.kind == .race }.compactMap {
             cal.dateComponents([.day], from: v.firstMonday, to: cal.startOfDay(for: $0.date)).day
@@ -1728,7 +1746,9 @@ private struct Builder {
         var firstWeekRecovery = false
         var allEasyWeeks: Set<Int> = []
         var keptSmaller: [Int] = []
+        var returnPaceWeeks: [Int] = []
         for i in 0..<raceWeek {
+            setPaceTargets(week: i, applied: &returnPaceWeeks)
             if i == 1 && openStartWeek, let later = recoveryWeeks(anchor: anchor, startStreak: ledger.streak,
                                                                   firstCanRecover: true, from: 1) {
                 // Week 0 may reset the streak in some ways the start week can
@@ -1894,6 +1914,7 @@ private struct Builder {
             composeRaceWeek(training: min(desiredTraining, allowedTraining), sharpener: sharpener,
                             excluded: excludedQualityDays(week: raceWeek, extraHard: []), sessionCap: cap)
         }
+        setPaceTargets(week: raceWeek, applied: &returnPaceWeeks)
         var raceDrafts = raceWeekDrafts(maxSession)
         if !spikeHolds(raceDrafts, week: raceWeek, spike: raceSpike) { raceDrafts = raceWeekDrafts(min(maxSession, raceSpike.cap)) }
         ledger.append(raceDrafts.reduce(0) { $0 + $1.duration } + v.raceSeconds, race: v.raceSeconds)
@@ -1922,6 +1943,7 @@ private struct Builder {
                 return .cannotBuild([.intensityDistributionNotMet(weekStart: w.weekStart, easyShare: share)])
             }
         }
+        if let note = returnPaceNote(weeks: returnPaceWeeks) { notes.append(note) }
         if !keptSmaller.isEmpty {
             let list = keptSmaller.map(String.init).joined(separator: ", ")
             notes.append("Week\(keptSmaller.count == 1 ? "" : "s") \(list) \(keptSmaller.count == 1 ? "is" : "are") planned shorter than the volume the plan was aiming for, \(PlanBuilder.easyRunLimitMarker) (or past the long-run cap or your max session length) on your running days. Adding a running day would fit more (SPEC F3).")
@@ -2008,8 +2030,31 @@ private struct Builder {
         }
     }
 
+    /// Sets the pace targets for training week `i` (3.5 rule 4, #28): the
+    /// plan's own, or, in the weeks after a break, with the return factor on
+    /// the paces taken from the anchor or the easy-pace sample. `applied`
+    /// collects the weeks the factor slows, for the plan's note.
+    mutating func setPaceTargets(week i: Int, applied: inout [Int]) {
+        guard let schedule = returnPaces, i < v.weekStarts.count else { paceTargets = v.targets; paceFactor = nil; return }
+        paceTargets = schedule.targets(v.targets, fitnessAnchor: input.fitnessAnchor, weekStart: v.weekStarts[i],
+                                       timeZone: timeZone)
+        let k = schedule.weekNumber(of: v.weekStarts[i], timeZone: timeZone)
+        paceFactor = schedule.affects(week: k) && schedule.factor(week: k) < 1 ? schedule.factor(week: k) : nil
+        if paceFactor != nil { applied.append(i) }
+    }
+
+    /// The plan's note on slower paces after a break (3.5 rule 4), or nil.
+    func returnPaceNote(weeks applied: [Int]) -> String? {
+        guard let schedule = returnPaces, let first = applied.first, let last = applied.last else { return nil }
+        let k = schedule.weekNumber(of: v.weekStarts[first], timeZone: timeZone)
+        let slowest = (1 / schedule.factor(week: k) - 1) * 100
+        let span = first == last ? "week \(first + 1)" : "weeks \(first + 1) to \(last + 1)"
+        let ends = schedule.isShort ? "lifted back over the return weeks" : "held until a race you mark gives a new anchor"
+        return "After \(schedule.daysOff) days without running, training paces from your fitness anchor and easy pace are up to \(String(format: "%.1f", slowest))% slower in \(span), \(ends); heart-rate targets, your goal and race pacing are unchanged (SPEC 3.5 rule 4, heuristic)."
+    }
+
     func segment(_ role: WorkoutSegment.Role, _ intensity: WorkoutIntensity, _ seconds: Double) -> WorkoutSegment {
-        WorkoutSegment(role: role, intensity: intensity, durationSeconds: seconds, target: v.targets.target(intensity))
+        WorkoutSegment(role: role, intensity: intensity, durationSeconds: seconds, target: paceTargets.target(intensity))
     }
 
     /// The race named by its own distance, not its category (#89): "10-mile race", "15K", or "race".
@@ -2566,7 +2611,8 @@ private struct Builder {
             case .quality(let k): tag = k.rawValue
             default: tag = "easy"
             }
-            let p = WorkoutPrescription(purpose: d.purpose, phase: phase, segments: d.segments, rules: d.rules)
+            let p = WorkoutPrescription(purpose: d.purpose, phase: phase, segments: d.segments, rules: d.rules,
+                                        returnPaceFactor: paceFactor)
             return PlannedWorkout(id: "plan-w\(i)-d\(d.day)-\(tag)", date: sessionDate(week: i, day: d.day), kind: d.kind,
                                   durationSeconds: d.duration, distanceMeters: nil, prescription: p)
         }

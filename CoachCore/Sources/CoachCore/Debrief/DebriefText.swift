@@ -356,6 +356,9 @@ public enum DebriefText {
                 return (s + ", so easy pace targets move \(fmt(step, d, u)) slower on \(sessions(n))", cmps)
             }
             return (s, cmps)
+        case .returnPaces:
+            guard let n = v(.sessions), n.value > 0 else { return ("paces after your break are adjusted", []) }
+            return ("paces after your break are adjusted on \(sessions(n))", [])
         case .longRunHeld:
             guard let st = state(f, .allowedTime, [(.lessThan, .plannedTime)], d, u) else {
                 return ("the next long run is held at its length", [])
