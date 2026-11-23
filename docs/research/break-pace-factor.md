@@ -24,4 +24,6 @@ Source read: [8] VDOT O2 (Daniels), "VDOT adjustments for time off from running"
 - Cross-training: never used. The app doesn't ask (no manual modes, CLAUDE.md scope) and doesn't read cross-training from the runner's data. The no-cross-training column is the more conservative one, and the other column has a suspect row.
 - Speed: training speeds are scaled by the factor. Not checked against Daniels' own pace tables, which haven't been read.
 - Weight adjustment: not used. The spec reads no body weight, and the step matters only when weight changed during the break.
-- Ending: after a short break, lifted back over the return ramp (factor, halfway, 100% from week 3). After a longer break, held until a race or time trial after the break gives a new anchor, as [8] says. Through week 3 no training pace is faster than before the break.
+- Ending: after a short break, lifted back over the return ramp (factor, halfway, 100% from week 3). After a longer break, held until a race or time trial after the break gives a new anchor, as [8] says. Only a run marked as a race or time trial ends it; a best effort from training does not. Through the third week after the break no training pace is faster than before the break.
+- Source: [8] is a coaching table, not a study.
+- For the code PR: `.timeTrialLast20Min` is not an anchor candidate today (`markedRaces` takes `.race` only), so the code needs a way for a marked time trial to end the factor.
