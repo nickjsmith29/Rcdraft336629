@@ -120,7 +120,14 @@ public enum PainCheckInOutcome: Equatable, Sendable {
 /// (the adaptation engine, F4) passes the date of the latest check-in whose
 /// response it has already applied; a check-in at or before that date gives
 /// `.noAction`, so one high score never swaps a second quality session. The
-/// caller keeps enforcing the stored freeze itself until `freezeEnd`.
+/// caller keeps enforcing the stored freeze itself until `freezeEnd`. The
+/// caller must evaluate on every new check-in, because only the latest is
+/// looked at. Check-ins at one instant: the latest is the highest score at the
+/// latest instant. The "previous" score for the rise test is the lowest of the
+/// other check-ins at that same instant; if the latest instant has only one
+/// check-in, it is the lowest score at the instant before. So input order never
+/// hides a rise. For `persistentCount` (the clinician prompt) every valid
+/// check-in counts, so two at one instant count twice.
 public enum PainCheckInRule {
     /// - Parameters:
     ///   - tracksPain: the explicit flag from the goal interview (F2). False
@@ -145,20 +152,18 @@ public enum PainCheckInRule {
                                 timeZone: TimeZone,
                                 limits: PainRuleLimits = .default) -> PainCheckInOutcome {
         guard tracksPain else { return .notTracked }
-        let valid = checkIns
+        // Every valid check-in, by date then score ascending, so ties are order-independent.
+        let reports = checkIns
             .filter { PainCheckIn.validScores.contains($0.score) && $0.date <= asOf }
-            .enumerated()
-            .sorted { $0.element.date != $1.element.date ? $0.element.date < $1.element.date : $0.offset < $1.offset }
-            .map(\.element)
-        guard let latest = valid.last else { return .noCheckIns }
+            .sorted { $0.date != $1.date ? $0.date < $1.date : $0.score < $1.score }
+        guard let latest = reports.last else { return .noCheckIns }
         if let applied = lastAppliedCheckIn, latest.date <= applied { return .noAction }
 
         var triggers: [PainTrigger] = []
         if latest.score >= limits.highScore {
             triggers.append(.scoreAtOrAbove(threshold: limits.highScore))
         }
-        if valid.count >= 2 {
-            let previous = valid[valid.count - 2].score
+        if let previous = previousScore(in: reports) {
             let rise = latest.score - previous
             if rise >= limits.minimumRise {
                 triggers.append(.rise(previous: previous, rise: rise))
@@ -177,7 +182,7 @@ public enum PainCheckInRule {
         let swap = firstQuality.flatMap { q in
             q.date >= asOf ? QualitySwap(original: q, replacement: q.swappedToEasy()) : nil
         }
-        let recent = valid.suffix(limits.persistentCount)
+        let recent = reports.suffix(limits.persistentCount)
         let persistent = limits.persistentCount > 0
             && recent.count == limits.persistentCount
             && recent.allSatisfy { $0.score >= limits.highScore }
@@ -187,6 +192,17 @@ public enum PainCheckInRule {
                                   persistent: persistent, timeZone: timeZone, limits: limits)
         return .act(PainResponse(checkIn: latest, triggers: triggers, freezeStart: latest.date, freezeEnd: freezeEnd,
                                  swap: swap, suggestClinician: persistent, explanation: explanation))
+    }
+
+    /// The "previous" score for the rise test, from check-ins sorted by date
+    /// then score ascending: the lowest of the other check-ins at the latest
+    /// instant, else the lowest score at the instant before; nil if neither exists.
+    private static func previousScore(in sorted: [PainCheckIn]) -> Int? {
+        guard let latest = sorted.last else { return nil }
+        let group = sorted.filter { $0.date == latest.date }
+        if group.count > 1 { return group[0].score }
+        return sorted.last { $0.date < latest.date }
+            .flatMap { before in sorted.first { $0.date == before.date }?.score }
     }
 
     private static func explain(latest: PainCheckIn, triggers: [PainTrigger], freezeEnd: Date, swap: QualitySwap?,

@@ -182,4 +182,48 @@ final class PainCheckInTests: XCTestCase {
         XCTAssertEqual(evaluate([checkIn(day: 3, 2), checkIn(day: 5, 8)], asOf: at(day: 4)), .noAction)
         XCTAssertEqual(evaluate([checkIn(day: 5, 8)], asOf: at(day: 4)), .noCheckIns)
     }
+
+    func testSameTimestampHigherScoreCountsAsLatestInEitherOrder() throws {
+        let low = checkIn(day: 3, 2), high = checkIn(day: 3, 6)
+        let a = try response(evaluate([low, high]))
+        let b = try response(evaluate([high, low]))
+        XCTAssertEqual(a, b)
+        XCTAssertEqual(a.checkIn.score, 6)
+        // Previous is the lowest other check-in at the same instant.
+        XCTAssertEqual(a.triggers, [.scoreAtOrAbove(threshold: 4), .rise(previous: 2, rise: 4)])
+    }
+
+    func testSameTimestampTieDoesNotHideEarlierComparison() throws {
+        let r = try response(evaluate([checkIn(day: 1, 1), checkIn(day: 3, 6), checkIn(day: 3, 2)]))
+        XCTAssertEqual(r.checkIn.score, 6)
+        XCTAssertEqual(r.triggers, [.scoreAtOrAbove(threshold: 4), .rise(previous: 2, rise: 4)])
+    }
+
+    private func permutations<T>(_ a: [T]) -> [[T]] {
+        guard let f = a.first else { return [[]] }
+        return permutations(Array(a.dropFirst())).flatMap { p in (0...p.count).map { i in var q = p; q.insert(f, at: i); return q } }
+    }
+
+    func testRiseFiresWhenZeroAndTwoShareTheLatestInstant() throws {
+        for order in permutations([checkIn(day: 3, 0), checkIn(day: 3, 2)]) {
+            let r = try response(evaluate(order))
+            XCTAssertEqual(r.triggers, [.rise(previous: 0, rise: 2)])
+        }
+    }
+
+    func testRiseFiresWhenOneAndZeroShareThePreviousInstant() throws {
+        for order in permutations([checkIn(day: 1, 1), checkIn(day: 1, 0), checkIn(day: 2, 2)]) {
+            let r = try response(evaluate(order))
+            XCTAssertEqual(r.triggers, [.rise(previous: 0, rise: 2)])
+        }
+    }
+
+    func testSameInstantCheckInsEachCountTowardPersistentPain() throws {
+        let d2 = checkIn(day: 2, 4), d3a = checkIn(day: 3, 4), d3b = checkIn(day: 3, 5)
+        for order in [[d2, d3a, d3b], [d3b, d3a, d2], [d3a, d2, d3b]] {
+            let r = try response(evaluate(order))
+            XCTAssertEqual(r.checkIn.score, 5)
+            XCTAssertTrue(r.suggestClinician, "order \(order.map(\.score))")
+        }
+    }
 }
