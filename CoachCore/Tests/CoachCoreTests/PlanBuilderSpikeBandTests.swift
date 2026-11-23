@@ -317,13 +317,15 @@ final class PlanBuilderSpikeBandTests: XCTestCase {
     /// minutes, even a 10-min warm-up and 5-min cool-down leave too little
     /// hard time for 16% of the week, so the week is still shortened to
     /// about hard / 0.165: 179 → 132 min (7 days, 240, marathon) and 135 →
-    /// 84 (6 days, 180, 5K). Keeping the volume as easy running would put the
+    /// 77 (6 days, 180, 5K, #23). Keeping the volume as easy running would put the
     /// week under SPEC 3.1's band; adding hard time would change the
     /// recovery week. Which to do is the owner's call (SPEC 3.1 against 3.5
     /// rule 1), so the shortened weeks are pinned here until it is decided.
+    /// Since #23 no easy run is longer than the week's long run, so the 5K
+    /// case's 31-minute easy run beside a 24-minute long run is cut to 24: 77.
     func testKnownGapSpikeCappedRecoveryWeeksStillShrinkToTheBand() throws {
         let cases: [(Int, Double, Double, Double?, Double)] = [(7, 240, Distance.marathon, nil, 132),
-                                                               (6, 180, Distance.fiveK, 45, 84)]
+                                                               (6, 180, Distance.fiveK, 45, 77)]
         for (count, weekly, distance, maxSession, expected) in cases {
             let days = Array(Self.all.prefix(count))
             let h = history(minutes: weekly, weeks: 4, days: days, longShare: nil)
