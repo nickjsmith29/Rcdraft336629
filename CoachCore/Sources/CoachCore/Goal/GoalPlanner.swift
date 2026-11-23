@@ -115,9 +115,17 @@ public struct GoalReplan: Equatable, Sendable {
     /// stay: checked with the history and the new plan. Empty when there is
     /// no new plan.
     public let keptThisWeek: [PlannedWorkout]
-    /// The previous plan's sessions for the rest of the current week that
-    /// were dropped: on a day that is no longer a training day, or because
-    /// with them the new plan would break a guardrail.
+    /// The previous plan's sessions of the current week that are not kept,
+    /// oldest first: on a day that is no longer a training day, because
+    /// with them the new plan would break a guardrail, the old plan's race
+    /// when it falls in this week, and a session from earlier today that was
+    /// not done (no run logged today). With `keptThisWeek`, this covers the
+    /// rest of the week; a session already done today is neither.
+    ///
+    /// Heuristic: a session from earlier today counts as undone when no run
+    /// is logged on today's calendar day. Any run logged today counts as doing
+    /// every earlier-today session (the plan keeps no per-session done state),
+    /// and a run after `baseline.asOf` is not seen.
     public let droppedThisWeek: [PlannedWorkout]
     public let explanation: [String]
 }
@@ -200,6 +208,24 @@ public enum GoalPlanner {
         switch result {
         case .plan(let p):
             if let old = previousPlan, let firstWeek = p.plan.weeks.first?.weekStart {
+                let cal = PlanCalendar.calendar(timeZone: tz)
+                let dayStart = cal.startOfDay(for: today)
+                let ranToday = baseline.runs.contains { cal.isDate($0.start, inSameDayAs: today) }
+                // Earlier today: undone (no run logged today) sessions are dropped, never kept; done ones are history.
+                let earlier = ranToday ? [] : old.workouts.filter { $0.date >= dayStart && $0.date < today && $0.date < firstWeek }
+                let missed = earlier.filter { $0.kind != .race }
+                if !missed.isEmpty {
+                    dropped += missed
+                    lines.append(missed.count == 1
+                        ? "The 1 session from earlier today in the previous plan wasn't done, so it was dropped."
+                        : "The \(missed.count) sessions from earlier today in the previous plan weren't done, so they were dropped.")
+                }
+                // The old race is never carried over; the new plan has its own race day.
+                let oldRaces = old.workouts.filter { $0.kind == .race && ($0.date >= today || earlier.contains($0)) && $0.date < firstWeek }
+                if !oldRaces.isEmpty {
+                    dropped += oldRaces
+                    lines.append("The race in the previous plan falls this week and is dropped; the new plan has its own race day.")
+                }
                 let rest = old.workouts.filter { $0.date >= today && $0.date < firstWeek && $0.kind != .race }
                 let onDays = rest.filter { settings.schedule.trainingDays.contains(PlanWeekday(of: $0.date, timeZone: tz)) }
                 let offDays = rest.filter { !onDays.contains($0) }
