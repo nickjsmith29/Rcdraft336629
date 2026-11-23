@@ -462,7 +462,7 @@ final class DebriefTests: XCTestCase {
                     let l = DebriefText.runLine(facts(f), units: units)
                     XCTAssertEqual(l?.comparisons.isEmpty, false, "\(pace) \(tolerance) \(units)")
                     if c == .withinTolerance {
-                        XCTAssertTrue(l?.text.contains("close enough for the coach to count as on target") ?? false, l?.text ?? "")
+                        XCTAssertTrue(l?.text.contains("close enough to count as on pace") ?? false, l?.text ?? "")
                         XCTAssertFalse(l?.text.contains("%") ?? true, "no tolerance percent the shown paces could contradict")
                     }
                     assertDebriefContract(facts(f), units: units)
@@ -640,6 +640,29 @@ final class DebriefTests: XCTestCase {
         assertDebriefContract(d, heuristics: h)
     }
 
+    /// The easy-cap change with no easy pace targets left to move says heart
+    /// rate, not pace, sets easy runs (SPEC 3.1, F6); with targets it states the move.
+    func testEasyCapWithNoEasyTargetsToMoveLetsHeartRateSetEasyRuns() {
+        func easyCap(sessions: Double) -> DebriefFacts {
+            var values = [DebriefValue(name: .easyMeanHeartRate, value: 152.4, unit: .bpm),
+                          DebriefValue(name: .easyCap, value: 150, unit: .bpm),
+                          DebriefValue(name: .sessions, value: sessions, unit: .count)]
+            if sessions > 0 { values.append(DebriefValue(name: .paceStep, value: 0.015, unit: .fraction)) }
+            return DebriefFacts(activityID: "x", facts: [DebriefFact(id: "change.easyPaceSlower", kind: .change(.easyPaceSlower),
+                                                                    values: values, comparison: .above, source: "test")], timeZone: F.tz)
+        }
+        let none = easyCap(sessions: 0)
+        let text = DebriefText.text(none)
+        XCTAssertTrue(text.contains("easy runs averaged 152 bpm, at or above the easy cap of 150 bpm, so let heart rate, not pace, set easy runs"), text)
+        XCTAssertFalse(text.contains("easy pace targets move"), text)
+        assertDebriefContract(none)
+
+        let some = DebriefText.text(easyCap(sessions: 2))
+        XCTAssertTrue(some.contains("so easy pace targets move 1.5% slower on 2 sessions"), some)
+        XCTAssertFalse(some.contains("let heart rate, not pace"), some)
+        assertDebriefContract(easyCap(sessions: 2))
+    }
+
     func testDecouplingLimitsMatchTheClassifier() {
         XCTAssertEqual(DecouplingClass(percent: DebriefFacts.decouplingGoodLimit - 0.001), .good)
         XCTAssertEqual(DecouplingClass(percent: DebriefFacts.decouplingGoodLimit), .moderate)
@@ -696,22 +719,6 @@ extension XCTestCase {
         }
         let comparisonWords = try! NSRegularExpression(pattern:
             "\\b(faster|slower|inside|within|above|below|under|over \\d|between \\d|rose|fell|ahead|behind|instead of|held steady)\\b")
-        typealias R = DebriefStatedComparison.Relation
-        /// Phrases that compare a value with a limit, and the stated
-        /// relations each needs (one from each set).
-        let limitPhrases: [(NSRegularExpression, [Set<R>])] = [
-            ("faster than", [[.lessThan, .atMost]]),
-            ("slower than", [[.greaterThan, .atLeast]]),
-            ("inside the", [[.atLeast], [.atMost, .lessThan]]),
-            ("between \\d", [[.atLeast], [.atMost]]),
-            ("at or above", [[.atLeast]]),
-            ("(?<!or )\\babove the", [[.greaterThan]]),
-            ("\\bbelow the", [[.lessThan]]),
-            ("\\bunder (the |its |\\d)", [[.lessThan]]),
-            ("\\bover \\d", [[.greaterThan]]),
-            ("instead of", [[.lessThan]]),
-            ("\\bwithin\\b", [[.lessThan, .atMost, .atLeast, .greaterThan]]),
-        ].map { (try! NSRegularExpression(pattern: $0.0), $0.1) }
         let notFinite = try! NSRegularExpression(pattern: "\\b(nan|inf|infinity)\\b", options: .caseInsensitive)
         /// Facts whose own kind states a direction (the engine's reading, a
         /// change that moves paces or caps a long run).
@@ -766,22 +773,9 @@ extension XCTestCase {
                               file: file, line: line)
             }
             let range = NSRange(l.text.startIndex..., in: l.text)
-            // Every phrase comparing a value with a limit has a stated comparison behind it.
-            // ("above the aerobic threshold" names the drift class, stated as "over 10%".)
-            let plain = l.text.replacingOccurrences(of: "above the aerobic threshold", with: "")
-            let plainRange = NSRange(plain.startIndex..., in: plain)
-            var needed = 0
-            for (re, needs) in limitPhrases {
-                let n = re.numberOfMatches(in: plain, range: plainRange)
-                guard n > 0 else { continue }
-                needed += n * needs.count
-                for need in needs {
-                    XCTAssertTrue(l.comparisons.contains { need.contains($0.relation) },
-                                  "\"\(re.pattern)\" has no stated \(need) comparison: \(l.text)", file: file, line: line)
-                }
-            }
-            XCTAssertGreaterThanOrEqual(l.comparisons.count, needed, "more comparison phrases than stated comparisons: \(l.text)",
-                                        file: file, line: line)
+            // Every phrase comparing a value with a limit is tied to the stated comparison
+            // of that value with that limit, with the strict relation the phrase means.
+            for v in debriefPhraseViolations(l) { XCTFail(v, file: file, line: line) }
             if comparisonWords.firstMatch(in: l.text, range: range) != nil {
                 XCTAssertTrue(facts.contains { $0.comparison != nil || directional($0) },
                               "comparison without a computed comparison: \(l.text)", file: file, line: line)
@@ -792,5 +786,147 @@ extension XCTestCase {
         if all.count == lines.count {
             XCTAssertEqual(cited, Set(ids), "every fact is stated", file: file, line: line)
         }
+    }
+}
+
+// MARK: - Limit phrases tied to their comparisons
+
+private typealias Rel = DebriefStatedComparison.Relation
+private typealias Nm = DebriefValue.Name
+
+/// One comparison a phrase must rest on: the value compared, the limit it is
+/// compared with, and the only relations the phrase allows.
+private struct PhraseNeed {
+    let value: Nm, relations: Set<Rel>, limit: Nm
+    init(_ value: Nm, _ relations: Set<Rel>, _ limit: Nm) { (self.value, self.relations, self.limit) = (value, relations, limit) }
+}
+
+/// Phrase patterns and, for each, the alternative sets of comparisons any one
+/// of which the phrase may state (all needs of an alternative must be met).
+/// "faster" means strictly less time per km (`lessThan`), "slower" strictly
+/// more (`greaterThan`); a range ("inside", "within", "between") needs its
+/// floor and its ceiling, each of the fact it states.
+private let debriefLimitPhrases: [(pattern: String, alternatives: [[PhraseNeed]])] = {
+    let paceRange = [PhraseNeed(.pace, [.atLeast], .targetFastest), PhraseNeed(.pace, [.atMost], .targetSlowest)]
+    let hrBand = [PhraseNeed(.heartRate, [.atLeast], .bandFloor), PhraseNeed(.heartRate, [.lessThan], .bandCeiling)]
+    let driftRange = [PhraseNeed(.decoupling, [.atLeast], .goodLimit), PhraseNeed(.decoupling, [.atMost], .highLimit)]
+    return [
+        ("faster than", [[PhraseNeed(.pace, [.lessThan], .targetFastest)]]),
+        ("slower than", [[PhraseNeed(.pace, [.greaterThan], .targetSlowest)]]),
+        ("inside the", [paceRange, hrBand]),
+        ("\\bwithin\\b", [paceRange, hrBand, driftRange]),
+        ("between \\d", [driftRange]),
+        ("at or above", [[PhraseNeed(.heartRate, [.atLeast], .bandCeiling)], [PhraseNeed(.heartRate, [.atLeast], .bandFloor)],
+                         [PhraseNeed(.easyMeanHeartRate, [.atLeast], .easyCap)], [PhraseNeed(.cadenceFade, [.atLeast], .fadeLimit)]]),
+        ("(?<!or )\\babove the", [[PhraseNeed(.pace, [.greaterThan], .targetSlowest)], [PhraseNeed(.decoupling, [.greaterThan], .highLimit)]]),
+        ("\\bbelow the", [[PhraseNeed(.heartRate, [.lessThan], .bandFloor)]]),
+        ("\\bunder (the |its |\\d)", [[PhraseNeed(.decoupling, [.lessThan], .goodLimit)], [PhraseNeed(.heartRate, [.lessThan], .bandCeiling)],
+                                      [PhraseNeed(.cadenceFade, [.lessThan], .fadeLimit)], [PhraseNeed(.movingTime, [.lessThan], .minimumTime)],
+                                      [PhraseNeed(.allowedTime, [.lessThan], .plannedTime)]]),
+        ("\\bover \\d", [[PhraseNeed(.decoupling, [.greaterThan], .highLimit)]]),
+        ("instead of", [[PhraseNeed(.allowedTime, [.lessThan], .plannedTime)]]),
+    ]
+}()
+
+/// Problems with how a line's limit phrases rest on its stated comparisons;
+/// empty when every phrase is tied to the comparison of the right value with
+/// the right limit, with a strict relation that holds for the shown numbers
+/// (or, for a boundary, "just " before the phrase).
+private func debriefPhraseViolations(_ l: DebriefLine) -> [String] {
+    // "above the aerobic threshold" names the drift class, stated as "over 10%".
+    let plain = l.text.replacingOccurrences(of: "above the aerobic threshold", with: String(repeating: "_", count: 27))
+    let text = plain as NSString
+    func shows(_ window: String, _ token: String) -> Bool {
+        let re = try! NSRegularExpression(pattern: "(?<![\\d.:])" + NSRegularExpression.escapedPattern(for: token) + "(?!\\d|[.:]\\d)")
+        return re.firstMatch(in: window, range: NSRange(window.startIndex..., in: window)) != nil
+    }
+    var matches: [(location: Int, alternatives: [[PhraseNeed]], pattern: String)] = []
+    for (pattern, alternatives) in debriefLimitPhrases {
+        let re = try! NSRegularExpression(pattern: pattern)
+        for m in re.matches(in: plain, range: NSRange(location: 0, length: text.length)) {
+            matches.append((m.range.location, alternatives, pattern))
+        }
+    }
+    matches.sort { $0.location < $1.location }
+    var used = Set<Int>()
+    var problems: [String] = []
+    for m in matches {
+        // The clause the phrase opens: up to the next comma, semicolon or sentence end.
+        var window = text.substring(from: m.location)
+        if let end = window.range(of: "(, |; |\\. |\\.$)", options: .regularExpression) { window = String(window[..<end.lowerBound]) }
+        let before = text.substring(to: m.location)
+        var matched = false
+        for alt in m.alternatives {
+            var picks: [Int] = []
+            for need in alt {
+                guard let i = l.comparisons.indices.first(where: { i in
+                    let c = l.comparisons[i]
+                    guard !used.contains(i), !picks.contains(i), c.value == need.value, c.limit == need.limit,
+                          need.relations.contains(c.relation), shows(window, c.shownLimit) else { return false }
+                    return c.isBoundary ? before.hasSuffix("just ") : c.relation.holds(c.shownValueNumber, c.shownLimitNumber)
+                }) else { break }
+                picks.append(i)
+            }
+            if picks.count == alt.count { used.formUnion(picks); matched = true; break }
+        }
+        if !matched { problems.append("\"\(m.pattern)\" at \(m.location) is not tied to a stated comparison with the right fact, strict relation and limit: \(l.text)") }
+    }
+    return problems
+}
+
+final class DebriefContractStrictnessTests: XCTestCase {
+    private func cmp(_ r: Rel, _ value: Nm = .pace, _ limit: Nm = .targetFastest, shown: (String, Double) = ("6:10", 370),
+                     limitShown: (String, Double) = ("6:00", 360), boundary: Bool = false) -> DebriefStatedComparison {
+        DebriefStatedComparison(factID: "pace", value: value, relation: r, limit: limit, shownValue: shown.0, shownLimit: limitShown.0,
+                                shownValueNumber: shown.1, shownLimitNumber: limitShown.1, isBoundary: boundary)
+    }
+    private func line(_ text: String, _ comparisons: [DebriefStatedComparison]) -> DebriefLine {
+        DebriefLine(topic: .run, text: text, factIDs: ["pace"], comparisons: comparisons)
+    }
+
+    func testFasterIsStrictlyLessTimePerKm() {
+        let text = "Pace was 5:50/km over the main part, faster than the 6:00 to 6:30/km target."
+        let fast = cmp(.lessThan, shown: ("5:50", 350))
+        XCTAssertEqual(debriefPhraseViolations(line(text, [fast])), [])
+        // Equal shown paces without boundary wording are not "faster".
+        let equal = cmp(.lessThan, shown: ("6:00", 360))
+        XCTAssertFalse(debriefPhraseViolations(line(text, [equal])).isEmpty)
+        // A slower pace is not faster.
+        let slower = cmp(.lessThan, shown: ("6:10", 370))
+        XCTAssertFalse(debriefPhraseViolations(line(text, [slower])).isEmpty)
+        // A non-strict relation does not back "faster".
+        let nonStrict = cmp(.atMost, shown: ("5:50", 350))
+        XCTAssertFalse(debriefPhraseViolations(line(text, [nonStrict])).isEmpty)
+    }
+
+    func testSlowerIsStrictlyMoreTimePerKmAndTiedToTheSlowEnd() {
+        let text = "Pace was 6:40/km over the main part, slower than the 6:00 to 6:30/km target."
+        let slow = cmp(.greaterThan, .pace, .targetSlowest, shown: ("6:40", 400), limitShown: ("6:30", 390))
+        XCTAssertEqual(debriefPhraseViolations(line(text, [slow])), [])
+        XCTAssertFalse(debriefPhraseViolations(line(text, [cmp(.atLeast, .pace, .targetSlowest, shown: ("6:40", 400), limitShown: ("6:30", 390))])).isEmpty)
+        // A comparison with the wrong limit (the fast end) or another value does not back it.
+        XCTAssertFalse(debriefPhraseViolations(line(text, [cmp(.greaterThan, .pace, .targetFastest, shown: ("6:40", 400), limitShown: ("6:30", 390))])).isEmpty)
+        XCTAssertFalse(debriefPhraseViolations(line(text, [cmp(.greaterThan, .heartRate, .targetSlowest, shown: ("6:40", 400), limitShown: ("6:30", 390))])).isEmpty)
+        // A limit the phrase does not show is not tied to it.
+        XCTAssertFalse(debriefPhraseViolations(line(text, [cmp(.greaterThan, .pace, .targetSlowest, shown: ("6:40", 400), limitShown: ("7:30", 450))])).isEmpty)
+    }
+
+    func testWithinNeedsBothEndsOfTheStatedRange() {
+        let text = "Pace was 6:10/km over the main part, within the 6:00 to 6:30/km target."
+        let lo = cmp(.atLeast, .pace, .targetFastest)
+        let hi = cmp(.atMost, .pace, .targetSlowest, limitShown: ("6:30", 390))
+        XCTAssertEqual(debriefPhraseViolations(line(text, [lo, hi])), [])
+        XCTAssertFalse(debriefPhraseViolations(line(text, [lo])).isEmpty, "one end is not a range")
+        // Any relation does not do: a strict "faster" relation on the fast end is not "within".
+        XCTAssertFalse(debriefPhraseViolations(line(text, [cmp(.lessThan, .pace, .targetFastest), hi])).isEmpty)
+        // Outside the range as shown.
+        XCTAssertFalse(debriefPhraseViolations(line(text, [lo, cmp(.atMost, .pace, .targetSlowest, shown: ("6:40", 400), limitShown: ("6:30", 390))])).isEmpty)
+    }
+
+    func testBoundaryNeedsJustBeforeThePhrase() {
+        let text = "Pace was 6:00/km over the main part, faster than the 6:00 to 6:30/km target."
+        let c = cmp(.lessThan, shown: ("6:00", 360), boundary: true)
+        XCTAssertFalse(debriefPhraseViolations(line(text, [c])).isEmpty)
+        XCTAssertEqual(debriefPhraseViolations(line(text.replacingOccurrences(of: "faster", with: "just faster"), [c])), [])
     }
 }
