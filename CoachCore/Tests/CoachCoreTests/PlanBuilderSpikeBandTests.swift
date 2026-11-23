@@ -195,11 +195,18 @@ final class PlanBuilderSpikeBandTests: XCTestCase {
         }
         let q = w.workouts.filter { $0.kind.isQuality }
         XCTAssertEqual(q.count, 2)
+        // Intervals: the usual 15 min warm-up; only the cool-down takes the
+        // easy time the cap holds back from the easy runs (and says so).
+        let intervals = try XCTUnwrap(q.first { $0.kind == .quality(.intervals) })
+        XCTAssertEqual(overhead(intervals).0, 15)
+        XCTAssertGreaterThanOrEqual(overhead(intervals).1, 10)
+        XCTAssertTrue((intervals.prescription?.purpose ?? "").contains("easy running"), intervals.prescription?.purpose ?? "")
         // Threshold, held by the session cap: shortened only as far as its main set reaches.
-        let threshold = try XCTUnwrap(q.last)
+        let threshold = try XCTUnwrap(q.first { $0.kind == .quality(.threshold) })
         XCTAssertEqual(threshold.durationSeconds, 60 * 60)
         let (warm, cool) = overhead(threshold)
-        XCTAssertLessThanOrEqual(warm + cool, 60)
+        XCTAssertLessThan(warm, 15)
+        XCTAssertLessThan(warm + cool, 25)
         XCTAssertGreaterThanOrEqual(warm, PlanHeuristics.shortWarmUpSeconds / 60)
         XCTAssertGreaterThanOrEqual(cool, PlanHeuristics.shortCoolDownSeconds / 60)
         // The whole plan is no shorter than with 15 and 10 everywhere.

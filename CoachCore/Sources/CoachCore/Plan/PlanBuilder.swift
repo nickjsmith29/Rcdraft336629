@@ -2019,7 +2019,8 @@ private struct Builder {
 
     /// A quality session with a main block of at most `main` seconds.
     func qualitySession(day: Int, kind: PlannedWorkout.QualityKind, main: Double, ctx: WeekContext,
-                        warmUp: Double, coolDown: Double, sharpener: Bool = false) -> SessionDraft {
+                        warmUp: Double, coolDown: Double, sharpener: Bool = false,
+                        extraEasy: Double = 0) -> SessionDraft {
         let s = structure(kind, phase: ctx.phase)
         let rep = s.rep * 60, jog = s.jog * 60
         let reps = max(1, Int(((main + jog) / (rep + jog)).rounded(.down)))
@@ -2038,7 +2039,7 @@ private struct Builder {
         segments.append(segment(.coolDown, .easy, coolDown))
         let minutes = Int(work / 60)
         let set = reps == 1 ? "\(minutes) min" : "\(reps) × \(minutes) min with \(Int(s.jog)) min jogs"
-        let purpose: String
+        var purpose: String
         switch kind {
         case .threshold, .tempo:
             purpose = "Threshold: \(set) around lactate threshold, to raise the pace you can hold for an hour."
@@ -2053,6 +2054,9 @@ private struct Builder {
             purpose = sharpener
                 ? "Race-week sharpener: \(set) at race pace, to stay sharp without tiring."
                 : "Race pace: \(set) at your \(raceName) pace, to rehearse the race effort."
+        }
+        if extraEasy >= 60 {
+            purpose += " The last \(Int(extraEasy / 60)) min of the cool-down is easy running, moved here from the easy runs so that none is longer than the long run."
         }
         var rules: [PlanRule] = sharpener || ctx.taper ? [.taper, .intensityDistribution, .qualityLimit]
             : [.intensityDistribution, .periodization, .qualityLimit]
@@ -2392,13 +2396,15 @@ private struct Builder {
         // when its volume doesn't fit (F3, #23). It never goes to the long
         // run, which would only raise the limit it was held to.
         let heldBack = cutByLimit
+        var extraEasy = [Double](repeating: 0, count: q)
         if cutByLimit >= 60 {
             for j in 0..<q where cutByLimit >= 60 {
                 let room = PlanBuilder.floorMinute(min(cutByLimit, easyCap - drafts[j].duration))
                 guard room >= 60 else { continue }
                 coolDowns[j] += room
+                extraEasy[j] += room
                 drafts[j] = qualitySession(day: qDays[j], kind: ctx.qualityKinds[j], main: mains[j], ctx: ctx,
-                                           warmUp: warmUps[j], coolDown: coolDowns[j])
+                                           warmUp: warmUps[j], coolDown: coolDowns[j], extraEasy: extraEasy[j])
                 cutByLimit -= room
             }
         }
