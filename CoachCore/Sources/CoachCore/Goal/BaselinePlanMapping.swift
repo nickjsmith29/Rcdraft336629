@@ -45,15 +45,26 @@ public enum BaselinePlanMapping {
     /// A week with a single run therefore has that run as `.long`: it is that
     /// week's longest run, and `LongRunHistory` (the source of the label) lists
     /// every week that had a run, however short. This is deliberate and
-    /// harmless. The history's `.long` kind is read only by the checker's
-    /// long-run share and easy-run-length rules, and those look at weeks that
-    /// hold planned sessions (the current, partly run week on a mid-week
-    /// start, where the label is the same one a multi-run week's longest run
-    /// gets), and by the pain-stop recovery's pre-stop long run, which takes
-    /// the longest run in the window before the stop (so the label changes
-    /// nothing there, a week's only run being its longest). Completed weeks
-    /// before the plan are not checked for either rule, and no volume,
-    /// weekly-increase or recovery rule reads the kind.
+    /// acceptable. The history's `.long` kind is read in three places:
+    /// - the checker's long-run-share and easy-run-length rules, which look
+    ///   only at weeks holding planned sessions (the current, partly run week
+    ///   on a mid-week start, where the label is the same one a multi-run
+    ///   week's longest run gets);
+    /// - the pain-stop recovery's pre-stop long run, which takes the longest
+    ///   run in the window before the stop, so the label changes nothing there;
+    /// - indirectly, the pain-stop recovery's `.easy`-based readers
+    ///   (`usualEasySeconds(before:)`, which sets the 3.5 rule 7 test-run
+    ///   length, and `usualEasySpeed()`), which only read `.easy` runs. A
+    ///   one-run week's run labelled `.long` is therefore left out of those
+    ///   easy medians; if every recent week has a single run, no easy run is
+    ///   left and the test run falls back to `testDefaultSeconds` (and the
+    ///   usual speed to nil). That is acceptable: the fallback is the rule's
+    ///   own safe default, a lone run is the runner's long run by the
+    ///   week's-longest definition, and it keeps a long run out of a median
+    ///   meant to describe easy runs.
+    ///
+    /// Completed weeks before the plan are not checked for the first two
+    /// readers, and no volume or weekly-increase rule reads the kind.
     ///
     /// A run with no usable time (`BaselineRun.movingTimeIsKnown` false, or a
     /// moving time that isn't a finite non-negative number) is kept with an

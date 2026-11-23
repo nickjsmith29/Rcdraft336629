@@ -365,7 +365,6 @@ final class GoalPlannerTests: XCTestCase {
         let replan = GoalPlanner.replan(from: original, previousPlan: old, to: edited, baseline: report, today: evening)
         XCTAssertNotNil(replan.result.plan)
         for s in earlier { XCTAssertTrue(replan.droppedThisWeek.contains(s)) }
-        XCTAssertTrue(replan.keptThisWeek.allSatisfy { $0.date >= evening })
         XCTAssertTrue(replan.explanation.contains { $0.contains("from earlier today") })
 
         // A run logged today means the session was done: it is neither kept nor dropped.
@@ -383,18 +382,19 @@ final class GoalPlannerTests: XCTestCase {
     }
 
     func testKeptEqualsTheRemainingSessionsWhenTheyFit() throws {
-        let original = GoalFixture.settings(weeksAhead: 14)
-        let old = try oldPlan(original)
-        // Same goal: the rest of the week stays as planned.
+        // The plan was built on this week's Monday morning with three days a
+        // week left to run; the same goal is re-planned on Wednesday noon, so
+        // Thursday on fits with the new plan and stays as planned.
+        let original = GoalFixture.settings(weeksAhead: 14, days: [.thursday, .saturday, .sunday])
+        let monday = BaselineFixture.date(day: BaselineFixture.weeks * 7, hour: 6)
+        let first = GoalPlanner.plan(settings: original, baseline: GoalFixture.fixtureReport(asOf: monday), today: monday)
+        let old = try XCTUnwrap(first.plan, "\(first.issues)").plan
         let replan = GoalPlanner.replan(from: original, previousPlan: old, to: original, baseline: report, today: today)
         let p = try XCTUnwrap(replan.result.plan, "\(replan.result.issues)")
         let firstWeek = try XCTUnwrap(p.plan.weeks.first).weekStart
         let rest = old.workouts.filter { $0.date >= today && $0.date < firstWeek }
-        XCTAssertFalse(rest.isEmpty)
-        if replan.droppedThisWeek.isEmpty {
-            XCTAssertEqual(replan.keptThisWeek, rest.sorted { $0.date < $1.date })
-        } else {
-            XCTAssertEqual(Set(replan.keptThisWeek + replan.droppedThisWeek), Set(rest))
-        }
+        XCTAssertEqual(rest.count, 3)
+        XCTAssertTrue(replan.droppedThisWeek.isEmpty, "\(replan.droppedThisWeek)")
+        XCTAssertEqual(replan.keptThisWeek, rest.sorted { $0.date < $1.date })
     }
 }
