@@ -102,8 +102,38 @@ public struct SyntheticNoise: Equatable, Sendable {
     public var strideSlope: Double = 0.25
     /// Altitude noise (1 sigma, metres).
     public var altitudeSigma: Double = 0.4
+    /// Correlated GPS speed error: a first-order autoregressive (AR(1))
+    /// process with this stationary standard deviation (m/s), added to every
+    /// good fix (the bad-fix spikes keep their own independent error). 0 turns
+    /// it off, and then draws no random numbers, so older seeded runs are
+    /// unchanged. Real GPS speed error is not white: multipath and satellite
+    /// geometry keep it the same sign for many seconds (#74).
+    public var gpsCorrelatedSigma: Double = 0
+    /// Correlation time of that error in seconds: the lag-`dt` correlation is
+    /// `exp(-dt / gpsCorrelationTime)`. Heuristic.
+    public var gpsCorrelationTime: Double = 15
+    /// Slowly drifting altitude error (barometer drift), AR(1), stationary
+    /// standard deviation in metres, added to the white `altitudeSigma` noise.
+    /// 0 turns it off (and draws nothing). It barely changes a slope fitted
+    /// over tens of metres, which is the point of a realistic test.
+    public var altitudeDriftSigma: Double = 0
+    /// Correlation time of the altitude drift, seconds. Heuristic.
+    public var altitudeDriftTime: Double = 120
 
     public init() {}
+
+    /// The setting for the cue-engine tests: the default noise plus AR(1) GPS
+    /// speed error (0.06 m/s, 15 s), altitude drift (0.3 m, 120 s) and the
+    /// hilly run's more frequent GPS dropouts. All heuristics.
+    public static var forCueTests: SyntheticNoise {
+        var n = SyntheticNoise()
+        n.gpsCorrelatedSigma = 0.06
+        n.gpsCorrelationTime = 15
+        n.altitudeDriftSigma = 0.3
+        n.dropoutProbability = 0.025
+        n.dropoutDuration = 8...25
+        return n
+    }
 
     /// No noise, no dropouts, no spikes, no bias: for exact-value tests.
     public static var clean: SyntheticNoise {
@@ -201,6 +231,9 @@ public struct SyntheticRun: Sendable {
         }
 
         let watchBias = 1 + rng.uniform(-noise.watchBiasFraction, noise.watchBiasFraction)
+        var gpsError = noise.gpsCorrelatedSigma > 0 ? noise.gpsCorrelatedSigma * rng.gaussian() : 0
+        var altitudeDrift = noise.altitudeDriftSigma > 0 ? noise.altitudeDriftSigma * rng.gaussian() : 0
+        var previousTime: Double?
         var readings: [LiveReading] = []
         var truth: [SyntheticTruth] = []
         var dropoutUntil = -1.0
@@ -209,6 +242,19 @@ public struct SyntheticRun: Sendable {
             let time = max(clock + rng.uniform(-noise.timeJitter, noise.timeJitter), readings.last.map { $0.time + 0.2 } ?? 0)
             guard time <= total + 1e-9 else { break }
             let st = state(at: time)
+
+            // AR(1) errors advance every reading, dropouts included.
+            let step = previousTime.map { time - $0 } ?? 0
+            previousTime = time
+            if noise.gpsCorrelatedSigma > 0 {
+                let phi = exp(-step / max(noise.gpsCorrelationTime, 1e-9))
+                gpsError = phi * gpsError + (1 - phi * phi).squareRoot() * noise.gpsCorrelatedSigma * rng.gaussian()
+            }
+            if noise.altitudeDriftSigma > 0 {
+                let phi = exp(-step / max(noise.altitudeDriftTime, 1e-9))
+                altitudeDrift = phi * altitudeDrift
+                    + (1 - phi * phi).squareRoot() * noise.altitudeDriftSigma * rng.gaussian()
+            }
 
             var gpsSpeed: Double?
             var gpsAccuracy: Double?
@@ -222,7 +268,7 @@ public struct SyntheticRun: Sendable {
                     let acc = rng.uniform(noise.goodAccuracy.lowerBound, noise.goodAccuracy.upperBound)
                     let sigma = noise.gpsSigmaBase + noise.gpsSigmaPerMeter * acc
                     gpsAccuracy = acc
-                    gpsSpeed = max(0, st.speed + sigma * rng.gaussian())
+                    gpsSpeed = max(0, st.speed + gpsError + sigma * rng.gaussian())
                 }
             }
 
@@ -232,7 +278,7 @@ public struct SyntheticRun: Sendable {
                 let stride = noise.strideIntercept + noise.strideSlope * st.speed
                 cadence = 60 * st.speed / stride + noise.cadenceSigma * rng.gaussian()
             }
-            let altitude = st.altitude + noise.altitudeSigma * rng.gaussian()
+            let altitude = st.altitude + altitudeDrift + noise.altitudeSigma * rng.gaussian()
 
             readings.append(LiveReading(time: time, gpsSpeed: gpsSpeed, gpsAccuracy: gpsAccuracy,
                                         watchSpeed: watch, cadence: cadence, heartRate: nil, altitude: altitude))
