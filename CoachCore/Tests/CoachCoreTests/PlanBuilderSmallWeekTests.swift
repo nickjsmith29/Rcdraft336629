@@ -6,9 +6,9 @@ import XCTest
 // the layout `PlanHeuristics.minimumRecoveryWeekSeconds` describes (short
 // easy running and a short fartlek), with no run under the easy-run floor
 // (`PlanHeuristics.minimumEasyRunSeconds`) and no run labelled "long" under
-// it. The expected totals below are what the builder planned before this
-// change (the "main" values), so the sweep fails if a week ever grows or
-// takes more hard time. Synthetic runners only: every figure is made up.
+// it. The expected totals below were recorded from main at 29e8fc7, so the
+// sweep fails if a week ever grows or takes more hard time. Synthetic
+// runners only: every figure is made up.
 final class PlanBuilderSmallWeekTests: XCTestCase {
     private typealias F = PlanFixture
     private let utc = PlanFixture.utc
@@ -22,7 +22,7 @@ final class PlanBuilderSmallWeekTests: XCTestCase {
         [.monday, .tuesday, .thursday, .friday, .sunday],
         [.tuesday, .wednesday, .thursday, .friday, .saturday, .sunday],
     ]
-    private let distances = [Distance.fiveK, Distance.tenK, Distance.halfMarathon]
+    private let distances = [Distance.fiveK, Distance.tenK, Distance.halfMarathon, Distance.marathon]
 
     /// Seven build weeks of `weekly` minutes on three days (a long run on
     /// Sunday), so the plan's first week is a required recovery week
@@ -60,10 +60,9 @@ final class PlanBuilderSmallWeekTests: XCTestCase {
     }
 
     /// Weekly history minutes -> (total, hard) minutes of the sub-hour
-    /// recovery week the builder planned before this change. Any other
-    /// weekly volume in 60 to 90 minutes has none: it is a refused plan
-    /// below this table (see the retry test) and a recovery week of an hour
-    /// or more above it.
+    /// recovery week, recorded from main at 29e8fc7. Weeks of 60 to 68
+    /// minutes are refused (see the retry test); any other weekly volume
+    /// in 60 to 90 has a recovery week of an hour or more.
     private let main: [Double: (total: Double, hard: Double)] = {
         var t: [Double: (Double, Double)] = [:]
         for w in 69...71 { t[Double(w)] = (50, 10) }
@@ -71,6 +70,22 @@ final class PlanBuilderSmallWeekTests: XCTestCase {
         for w in 75...77 { t[Double(w)] = (54, 10) }
         for w in 78...79 { t[Double(w)] = (56, 10) }
         for w in 80...82 { t[Double(w)] = (58, 10) }
+        return t
+    }()
+
+    /// The same for a marathon plan, recorded from main at 29e8fc7. Its
+    /// long run may take up to 45% of the week (3.5 rule 5), so a 20-minute
+    /// run at the easy-run floor fits and stays labelled "long" in weeks of
+    /// 72 to 87 minutes of history; 69 to 71 minutes has no long run.
+    private let marathonMain: [Double: (total: Double, hard: Double)] = {
+        var t: [Double: (Double, Double)] = [:]
+        for w in 69...71 { t[Double(w)] = (50, 10) }
+        for w in 72...74 { t[Double(w)] = (46, 10) }
+        for w in 75...77 { t[Double(w)] = (48, 10) }
+        for w in 78...79 { t[Double(w)] = (50, 10) }
+        for w in 80...82 { t[Double(w)] = (51, 10) }
+        for w in 83...85 { t[Double(w)] = (53, 10) }
+        t[87] = (55, 13)
         return t
     }()
 
@@ -83,21 +98,26 @@ final class PlanBuilderSmallWeekTests: XCTestCase {
                 for w in stride(from: 60.0, through: 90.0, by: 1.0) {
                     let (result, history) = scenario(weekly: w, days: days, distance: distance)
                     let label = "\(days.count) days, \(Int(distance)) m, \(Int(w)) min"
+                    let table = distance == Distance.marathon ? marathonMain : main
+                    // A recorded week must still build: a new refusal fails here.
+                    if table[w] != nil { XCTAssertNotNil(result.plan, "\(label): \(result.issues)") }
                     guard let plan = result.plan else { continue }
                     let small = plan.weeks.filter { $0.isRecoveryWeek && !$0.isRaceWeek && $0.trainingSeconds < 3600 }
-                    if main[w] == nil { XCTAssertTrue(small.isEmpty, "\(label): \(small.map(shape))") }
+                    if table[w] == nil { XCTAssertTrue(small.isEmpty, "\(label): \(small.map(shape))") }
                     for week in small {
                         seen += 1
-                        let expected = try XCTUnwrap(main[w], label)
+                        let expected = try XCTUnwrap(table[w], label)
                         // Hard limits: no more time, and no more hard time, than main plans.
-                        XCTAssertLessThanOrEqual(week.trainingSeconds, expected.total * 60 + 1e-6, "\(label): \(shape(week))")
-                        XCTAssertLessThanOrEqual(hardSeconds(week), expected.hard * 60 + 1e-6, "\(label): \(shape(week))")
+                        let why = "\(label): \(shape(week))"
+                        XCTAssertLessThanOrEqual(week.trainingSeconds, expected.total * 60 + 1e-6, why)
+                        XCTAssertLessThanOrEqual(hardSeconds(week), expected.hard * 60 + 1e-6, why)
                         // No run under the easy-run floor, and so no short "long" run.
-                        XCTAssertTrue(week.workouts.allSatisfy { $0.durationSeconds >= floor }, "\(label): \(shape(week))")
+                        XCTAssertTrue(week.workouts.allSatisfy { $0.durationSeconds >= floor }, why)
                         XCTAssertTrue(week.workouts.filter { $0.kind == .long }.allSatisfy { $0.durationSeconds >= floor },
-                                      "\(label): \(shape(week))")
+                                      why)
                         XCTAssertGreaterThanOrEqual(week.trainingSeconds, PlanHeuristics.minimumRecoveryWeekSeconds, label)
-                        XCTAssertTrue(GuardrailChecker.check(history: history, planned: plan.workouts, timeZone: utc).passed, label)
+                        XCTAssertTrue(GuardrailChecker.check(history: history, planned: plan.workouts, timeZone: utc).passed,
+                                      label)
                     }
                 }
             }
@@ -110,8 +130,13 @@ final class PlanBuilderSmallWeekTests: XCTestCase {
     /// A 50-minute recovery week (history 70 min a week) is one easy run and
     /// one short fartlek of equal length, on two of the runner's days: a
     /// second easy run would need another 20 minutes, which the week hasn't
-    /// got, so the builder plans fewer runs and no long run. The fartlek holds
-    /// 10 minutes of hard running, 20% of the week, inside 3.1's band.
+    /// got, so the builder plans fewer runs. It has no long run: for 5K to
+    /// half marathon a 20-minute run is over the long run's one-third share
+    /// of the week (3.5 rule 5). A marathon plan's ceiling is 45%, so there
+    /// the missing long run comes from the other long-run limits, and weeks
+    /// of 72 to 87 minutes of history do keep a 20-minute long run (the
+    /// sweep above covers them). The fartlek holds 10 minutes of hard
+    /// running, 20% of the week, inside 3.1's band.
     func testAFiftyMinuteRecoveryWeekIsOneEasyRunAndAShortFartlek() throws {
         for days in daySets {
             for distance in distances {
@@ -139,15 +164,17 @@ final class PlanBuilderSmallWeekTests: XCTestCase {
     // MARK: The "fewer quality sessions" retry (3.1 band)
 
     /// `composeWeek` tries fewer quality sessions, down to none, when a week
-    /// can't hold the 3.1 band (a quality session's smallest main set won't
-    /// fit under the single-run spike cap). Here the first recovery week's
-    /// spike cap is 21 to 24 minutes, too little for a quality session's
-    /// warm-up, main set and cool-down, so the first draft is out of band; with no long run of 40 minutes either, no steady finish can
-    /// carry hard time, and the retry down to no quality session finds no
-    /// draft in band. The builder then refuses the plan with
-    /// `intensityDistributionNotMet` for that week (all easy running) rather
-    /// than shipping a week outside 3.1. With the spike rule off the same
-    /// week fits a fartlek and builds, so the cap is the cause.
+    /// can't hold the 3.1 band. This test reaches that retry only in the
+    /// degenerate case where the one-session draft already has no quality
+    /// session (the first recovery week's spike cap is 21 to 24 minutes, too
+    /// little for a quality session's warm-up, main set and cool-down), so
+    /// the retry to zero repeats the same draft. It pins "the retry runs and
+    /// fails", not a real step from more to fewer sessions. With no long run
+    /// of 40 minutes, no steady finish can carry hard time, so no draft is in
+    /// band. The builder then refuses the plan with `intensityDistributionNotMet`
+    /// for that week (all easy running) rather than ship a week outside 3.1.
+    /// With the spike rule off the same week fits a fartlek and builds, so
+    /// the cap is the cause.
     func testTheFewerQualitySessionsRetryFindsNoBandAndRefusesThePlan() throws {
         let ruleOff = GuardrailLimits(maxSingleRunIncrease: .infinity)
         for days in daySets {

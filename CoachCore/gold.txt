@@ -1,0 +1,107 @@
+3d w60 REFUSED
+3d w61 REFUSED
+3d w62 REFUSED
+3d w63 REFUSED
+3d w64 REFUSED
+3d w65 REFUSED
+3d w66 REFUSED
+3d w67 REFUSED
+3d w68 REFUSED
+3d w69 tot=50 hard=10 q25 e25
+3d w70 tot=50 hard=10 q25 e25
+3d w71 tot=50 hard=10 q25 e25
+3d w72 tot=46 hard=10 q26 L20
+3d w73 tot=46 hard=10 q26 L20
+3d w74 tot=46 hard=10 q26 L20
+3d w75 tot=48 hard=10 q27 L21
+3d w76 tot=48 hard=10 q27 L21
+3d w77 tot=48 hard=10 q27 L21
+3d w78 tot=50 hard=10 q28 L22
+3d w79 tot=50 hard=10 q28 L22
+3d w80 tot=51 hard=10 q29 L22
+3d w81 tot=51 hard=10 q29 L22
+3d w82 tot=51 hard=10 q29 L22
+3d w83 tot=53 hard=10 q30 L23
+3d w84 tot=53 hard=10 q30 L23
+3d w85 tot=53 hard=10 q30 L23
+4d w60 REFUSED
+4d w61 REFUSED
+4d w62 REFUSED
+4d w63 REFUSED
+4d w64 REFUSED
+4d w65 REFUSED
+4d w66 REFUSED
+4d w67 REFUSED
+4d w68 REFUSED
+4d w69 tot=50 hard=10 q25 e25
+4d w70 tot=50 hard=10 q25 e25
+4d w71 tot=50 hard=10 q25 e25
+4d w72 tot=46 hard=10 q26 L20
+4d w73 tot=46 hard=10 q26 L20
+4d w74 tot=46 hard=10 q26 L20
+4d w75 tot=48 hard=10 q27 L21
+4d w76 tot=48 hard=10 q27 L21
+4d w77 tot=48 hard=10 q27 L21
+4d w78 tot=50 hard=10 q28 L22
+4d w79 tot=50 hard=10 q28 L22
+4d w80 tot=51 hard=10 q29 L22
+4d w81 tot=51 hard=10 q29 L22
+4d w82 tot=51 hard=10 q29 L22
+4d w83 tot=53 hard=10 q30 L23
+4d w84 tot=53 hard=10 q30 L23
+4d w85 tot=53 hard=10 q30 L23
+4d w87 tot=55 hard=13 q31 L24
+5d w60 REFUSED
+5d w61 REFUSED
+5d w62 REFUSED
+5d w63 REFUSED
+5d w64 REFUSED
+5d w65 REFUSED
+5d w66 REFUSED
+5d w67 REFUSED
+5d w68 REFUSED
+5d w69 tot=50 hard=10 q25 e25
+5d w70 tot=50 hard=10 q25 e25
+5d w71 tot=50 hard=10 q25 e25
+5d w72 tot=46 hard=10 q26 L20
+5d w73 tot=46 hard=10 q26 L20
+5d w74 tot=46 hard=10 q26 L20
+5d w75 tot=48 hard=10 q27 L21
+5d w76 tot=48 hard=10 q27 L21
+5d w77 tot=48 hard=10 q27 L21
+5d w78 tot=50 hard=10 q28 L22
+5d w79 tot=50 hard=10 q28 L22
+5d w80 tot=51 hard=10 q29 L22
+5d w81 tot=51 hard=10 q29 L22
+5d w82 tot=51 hard=10 q29 L22
+5d w83 tot=53 hard=10 q30 L23
+5d w84 tot=53 hard=10 q30 L23
+5d w85 tot=53 hard=10 q30 L23
+5d w87 tot=55 hard=13 q31 L24
+6d w60 REFUSED
+6d w61 REFUSED
+6d w62 REFUSED
+6d w63 REFUSED
+6d w64 REFUSED
+6d w65 REFUSED
+6d w66 REFUSED
+6d w67 REFUSED
+6d w68 REFUSED
+6d w69 tot=50 hard=10 q25 e25
+6d w70 tot=50 hard=10 q25 e25
+6d w71 tot=50 hard=10 q25 e25
+6d w72 tot=46 hard=10 q26 L20
+6d w73 tot=46 hard=10 q26 L20
+6d w74 tot=46 hard=10 q26 L20
+6d w75 tot=48 hard=10 q27 L21
+6d w76 tot=48 hard=10 q27 L21
+6d w77 tot=48 hard=10 q27 L21
+6d w78 tot=50 hard=10 q28 L22
+6d w79 tot=50 hard=10 q28 L22
+6d w80 tot=51 hard=10 q29 L22
+6d w81 tot=51 hard=10 q29 L22
+6d w82 tot=51 hard=10 q29 L22
+6d w83 tot=53 hard=10 q30 L23
+6d w84 tot=53 hard=10 q30 L23
+6d w85 tot=53 hard=10 q30 L23
+6d w87 tot=55 hard=13 q31 L24
