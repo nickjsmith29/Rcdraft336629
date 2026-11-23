@@ -60,15 +60,16 @@ Then Phase 1 (F1, F2, F3, F4, F9, F6, F13 v1, F10 WorkoutKit sync), one feature 
 - **Ideas from the owner** arrive as issues the owner opens or as one-liners written up into issues. Write an issue with what to build, the SPEC.md sections, dependencies and a "Done when" line.
 - One issue per PR where possible. Don't widen a PR with new work; follow the focus rules below for what to file.
 
+- Don't add other scheduled or automated runs (cron workflows, nightly agents) unless the owner asks for one.
+
 ### Focus (the owner's decision, 23 Nov 2026)
 
-The backlog grew faster than it shrank, so the owner chose these four rules. They outrank anything in this file that says otherwise.
+The backlog grew faster than it shrank, so the owner chose these four rules. They outrank the older backlog and review rules here; they don't relax the hard rules, the research rule, spec-first changes, the tests a PR's own change needs, or the limits on the coder agent.
 
 1. **Keep the backlog to what blocks a usable plan.** An open issue is roadmap work (phases 0 to 3), app work, or something that makes normal plans wrong or unusable. Low-priority edge cases are parked: closed as not planned with the `deferred` label and listed in the running follow-ups issue (#74). Reopen one only if it starts to matter for normal 3 to 6 day weeks.
 2. **No new issue per merge.** Small follow-ups from reviews (wording, extra tests, doc fixes, rare inputs) go as a checklist line in #74, not as new issues. File a new issue only for a real bug that affects a normal plan, or for work that blocks a usable app.
-3. **Batch the owner's questions.** Collect the calls only the owner can make (spec choices, training-rule changes, anything that costs money) and ask them together at most once a day, not one at a time. Until answered, keep the current safe behaviour and work on something else. Label the issue `needs-owner`.
-4. **Good enough, then move on.** Once the plan engine builds sound plans for normal 3 to 6 day weeks, move to Phase 2 (the Watch app and screens) rather than polishing rare cases. Reviewers approve when what's left is low-priority edge cases, logged in #74, instead of asking for another round.
-- Don't add other scheduled or automated runs (cron workflows, nightly agents) unless the owner asks for one.
+3. **Batch the owner's questions.** Collect the calls only the owner can make (spec choices, training-rule changes, anything that costs money) and ask them together at most once a day, not one at a time. Until answered, keep the current safe behaviour and work on something else. Label the issue that holds the question `needs-owner`.
+4. **Good enough, then move on.** Once the plan engine builds sound plans for normal 3 to 6 day weeks, move on to Phase 2 (SPEC.md 9: F11 watch app and CueEngine, F5, F8, F7 part 1) rather than polishing rare cases. The Phase 1 app work still left (screens, F10 sync wiring) stays open under rule 1. Reviewers approve when what's left is low-priority edge cases, logged in #74, instead of asking for another round.
 
 ## Pull request workflow (the owner's rule)
 
