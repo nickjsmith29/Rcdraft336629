@@ -19,4 +19,4 @@ Coaches treat the long run as the longest run of the week by definition. No stud
 
 ## Owner's decision
 
-Pending (#23).
+Option 1, "Cap at long run" (Nick, 23 Nov 2026, #23): no easy run is longer than the week's long run, and nothing goes past rule 5's long-run time cap or the runner's max session length; a week whose volume doesn't fit plans smaller with a note. Option not chosen: easy runs at most 75% of the week's long run (no source for the figure).
