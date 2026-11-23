@@ -43,9 +43,11 @@ public struct LTHREstimate: Equatable, Sendable {
     /// `LTHREstimator.agreementToleranceBPM` of it; nil otherwise.
     public let setAside: HREffort?
     /// True when another qualifying effort lies within
-    /// `LTHREstimator.agreementToleranceBPM` of `source`. A single effort, or
-    /// one that only survived because the top effort was set aside, is not
-    /// corroborated, and the app should confirm it with a field test (SPEC.md 3.2).
+    /// `LTHREstimator.agreementToleranceBPM` of `source`. False for a single
+    /// effort, and false for a fallback (the top effort was set aside and the
+    /// second-highest sets the estimate) when no third effort lies within
+    /// tolerance of that source effort. The app should then confirm the
+    /// estimate with a field test (SPEC.md 3.2).
     public let isCorroborated: Bool
 }
 
@@ -59,17 +61,25 @@ public struct LTHREstimate: Equatable, Sendable {
 ///   it matches the 30-minute protocol of SPEC.md 3.2 (with a few minutes'
 ///   slack for a late press of the stop button) and its last-20-minute
 ///   average is a sustained effort at threshold. A longer trial is a
-///   different, easier effort and doesn't count.
+///   different, easier effort and doesn't count. The 30 to 35 minute window
+///   is a heuristic, not a physiological constant, and it has no slack below
+///   30 minutes (a trial stopped at 29:55 is excluded). The importer must
+///   report the trial's duration without warm-up and cool-down, or the
+///   window will accept or reject the wrong efforts.
 /// - Only efforts from `now - lookbackDays` through `now`, both inclusive, count.
 /// - Robustness to one bad recording: a below-par day can hide threshold but
 ///   can't raise a sustained average above it, so the highest qualifying
 ///   average normally sets the estimate. A strap glitch or cadence lock can,
 ///   though. So with two or more qualifying efforts, the highest is used only
 ///   when the second-highest agrees with it within `agreementToleranceBPM`
-///   (inclusive). Otherwise the highest is set aside as a suspected bad
-///   recording and the second-highest sets the estimate. With three or more
-///   efforts that is the median of the top three; either way it errs low,
+///   (inclusive). Otherwise the highest is set aside as unconfirmed (it may
+///   be a bad recording, or a genuinely better day) and the second-highest
+///   sets the estimate. Efforts are sorted highest first, so the fallback is
+///   always the second-highest, whatever the number of efforts; it errs low,
 ///   which keeps easy runs easy. The set-aside effort stays in the evidence list.
+///   This guards against one bad recording, not two that agree: if the top two
+///   efforts are within tolerance of each other they are trusted even if both
+///   are wrong, and whatever lies below them is ignored.
 /// - With exactly one qualifying effort it sets the estimate, marked as not
 ///   corroborated.
 /// There is deliberately no age-based fallback: with no qualifying effort
@@ -175,7 +185,8 @@ public struct HRZones: Equatable, Sendable {
     /// is a missing or broken reading rather than recovery effort.
     public func zone(for bpm: Double) -> HRZone? {
         guard bpm.isFinite, bpm > 0 else { return nil }
-        return HRZone.allCases.last { bpm >= lowerBound($0) } ?? .z1
+        // z1's lower bound is 0 and bpm > 0, so a match always exists.
+        return HRZone.allCases.last { bpm >= lowerBound($0) }
     }
 
     /// Upper limit for easy running: the lower bound of zone 3, so the top of
