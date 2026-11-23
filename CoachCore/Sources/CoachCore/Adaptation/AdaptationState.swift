@@ -84,13 +84,25 @@ public struct LongRunRecord: Equatable, Sendable, Codable {
     public let movingSeconds: Double
     /// Pace-to-HR decoupling, nil when it could not be computed on a steady run.
     public let decouplingPercent: Double?
+    /// Main-part average heart rate, the value the easy-run cap check uses. Nil
+    /// when the run had no heart rate, and for a record saved before this was
+    /// kept; such a record never qualifies by the short-run heart-rate route
+    /// (SPEC 3.3, #170).
+    public let averageHeartRate: Double?
+    /// Top of the runner's zone 2 (`HRZones.easyCeiling`, exclusive) in the zones
+    /// in use when the run was recorded, so a later change of zones does not
+    /// re-judge it. Nil for a record saved before this was kept.
+    public let easyCeiling: Double?
 
-    public init(activityID: String, date: Date, plannedSeconds: Double, movingSeconds: Double, decouplingPercent: Double?) {
+    public init(activityID: String, date: Date, plannedSeconds: Double, movingSeconds: Double, decouplingPercent: Double?,
+                averageHeartRate: Double? = nil, easyCeiling: Double? = nil) {
         self.activityID = activityID
         self.date = date
         self.plannedSeconds = plannedSeconds
         self.movingSeconds = movingSeconds
         self.decouplingPercent = decouplingPercent
+        self.averageHeartRate = averageHeartRate
+        self.easyCeiling = easyCeiling
     }
 }
 

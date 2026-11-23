@@ -18,7 +18,9 @@ final class LongRunGateFloorTests: XCTestCase {
     private func records(minutes: Double, qualifying: Bool) -> [LongRunRecord] {
         [-2, -1].map { w in
             LongRunRecord(activityID: "old-l\(-w)", date: F.date(week: w, day: 5), plannedSeconds: minutes * 60,
-                          movingSeconds: minutes * 60, decouplingPercent: qualifying ? 2 : 8)
+                          movingSeconds: minutes * 60, decouplingPercent: qualifying ? 2 : 8,
+                          averageHeartRate: qualifying && minutes <= 40 ? F.zones.easyCeiling - 10 : nil,
+                          easyCeiling: F.zones.easyCeiling)
         }
     }
 
@@ -57,7 +59,8 @@ final class LongRunGateFloorTests: XCTestCase {
         let t = try XCTUnwrap(c.triggers.first { $0.metric == .longRunDuration && $0.sourceID == "l0" })
         XCTAssertEqual(t.value, 50 * 60)
         XCTAssertEqual(t.expectedHigh, 18 * 60, "the debrief reads the allowed time from here")
-        XCTAssertEqual(c.triggers.filter { $0.metric == .decoupling }.map(\.sourceID), ["old-l2", "old-l1"])
+        // #170: 18-min records are too short for decoupling, so each is judged by heart rate (no heart rate here).
+        XCTAssertEqual(c.triggers.filter { ($0.sourceID ?? "").hasPrefix("old-") }.map(\.sourceID), ["old-l2", "old-l1"])
         assertAdaptationSound(d.outcomes)
     }
 
