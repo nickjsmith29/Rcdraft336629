@@ -136,8 +136,12 @@ public enum PlanHeuristics {
     /// session and an easy run. A week the guardrails would hold below this is
     /// refused (`PlanBuildIssue.noWorkableWeek`) rather than left empty.
     public static let minimumWeekSeconds: Double = 60 * 60
-    /// Smallest workable recovery week the guardrails require (two short easy
-    /// runs and a few strides' worth of fartlek). Lower than
+    /// Smallest recovery week the guardrails require. In practice the plan
+    /// builder plans a sub-hour recovery week as one easy run plus a short
+    /// fartlek (at least `minimumEasyRunSeconds` for the run, about 25
+    /// minutes for the fartlek session), so weeks it can build are at least
+    /// 50 minutes (46 in a marathon plan, with a 20-minute long run); a
+    /// smaller one is refused. Lower than
     /// `minimumWeekSeconds` because a recovery week after a small week (for
     /// example on the way back from a break) is 75 to 80% of it.
     public static let minimumRecoveryWeekSeconds: Double = 40 * 60
