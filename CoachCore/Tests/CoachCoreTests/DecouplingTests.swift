@@ -346,6 +346,10 @@ final class DecouplingTests: XCTestCase {
             DecouplingOptions(warmUpSeconds: -60),
             DecouplingOptions(minimumCoverage: 1.5),
             DecouplingOptions(maximumHoldSeconds: .nan),
+            DecouplingOptions(maximumHoldSeconds: 0),
+            DecouplingOptions(maximumHoldSeconds: -0.0),
+            DecouplingOptions(maximumHoldSeconds: -5),
+            DecouplingOptions(maximumHoldSeconds: .infinity),
             DecouplingOptions(maximumSpeedCV: .infinity),
         ]
         for opts in bad {
@@ -354,6 +358,12 @@ final class DecouplingTests: XCTestCase {
             XCTAssertNil(Decoupling.isSteady(stream(seconds: 3600), options: opts))
         }
         XCTAssertTrue(DecouplingOptions.default.isValid)
+    }
+
+    func testSmallestPositiveHoldIsValid() {
+        let opts = DecouplingOptions(maximumHoldSeconds: 1e-3)
+        XCTAssertTrue(opts.isValid)
+        XCTAssertNotEqual(Decoupling.compute(stream(seconds: 3600), options: opts), .failure(.invalidOptions))
     }
 
     // MARK: Power-to-HR

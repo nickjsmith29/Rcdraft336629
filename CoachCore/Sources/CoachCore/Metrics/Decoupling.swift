@@ -116,10 +116,14 @@ public struct DecouplingOptions: Equatable, Sendable {
         self.maximumSpeedCV = maximumSpeedCV
     }
 
-    /// True when every option is finite and in range.
+    /// True when every option is finite and in range. `maximumHoldSeconds`
+    /// must be positive: with a zero hold no reading would count for any time,
+    /// so every run would refuse as insufficient heart rate and nothing would
+    /// point at the bad option.
     public var isValid: Bool {
-        let times = [minimumMovingSeconds, warmUpSeconds, maximumHoldSeconds]
+        let times = [minimumMovingSeconds, warmUpSeconds]
         return times.allSatisfy { $0.isFinite && $0 >= 0 }
+            && maximumHoldSeconds.isFinite && maximumHoldSeconds > 0
             && minimumCoverage.isFinite && (0...1).contains(minimumCoverage)
             && plausibleHeartRate.lowerBound.isFinite && plausibleHeartRate.upperBound.isFinite
             && maximumSpeedCV.isFinite && maximumSpeedCV >= 0
@@ -286,6 +290,13 @@ public enum Decoupling {
         }
     }
 
+    /// Builds the moving-time timeline. Moving time is the time from each moving
+    /// point to the next point. A silent stretch (no samples) with moving
+    /// samples on both sides counts in full as moving time, because nothing says
+    /// the runner stopped. Importers (HealthKit, Strava) must therefore emit
+    /// pause events as `isMoving == false` samples; a watch that stops
+    /// recording during auto-pause without a paused sample would count the gap
+    /// as moving time and lower heart-rate coverage.
     static func movingIntervals(_ samples: [StreamSample],
                                 basis: DecouplingBasis,
                                 options: DecouplingOptions) -> [Interval] {
