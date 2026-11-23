@@ -37,3 +37,5 @@ CHECKED: <one line: what you verified, including CI state and whether you ran te
 ```
 
 Approve only when there are no blocking findings. Anything that is wrong, untested, against the spec or a hard rule, or a security risk is blocking. Style preferences are non-blocking.
+
+Keep blocking findings proportionate (CLAUDE.md, Focus). Block for bugs that affect normal plans (3 to 6 day weeks, common race distances and inputs), spec or hard-rule breaks, unsafe training behaviour, missing tests for the PR's own change, and security risks. A rare-input edge case that the PR doesn't make worse, a wording nit or an extra test is non-blocking: list it so it can go into the running follow-ups issue (#74), and approve rather than asking for another round.
