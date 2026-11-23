@@ -216,8 +216,11 @@ final class PlanBuilderPartialWeekTests: XCTestCase {
                             XCTAssertTrue(report.passed, "\(label) rebuild after \(restName): \(report.violations.map(\.explanation))")
                             if restName == "usual" {
                                 // Size: the final plan gets back to at least the recent load.
+                                // A plan that says it plans weeks shorter so no easy run is
+                                // longer than the long run (F3, #23) may peak under it.
                                 let peak = q.weeks.map(\.trainingSeconds).max() ?? 0
-                                XCTAssertGreaterThanOrEqual(peak, rebuiltInput.recentWeeklySeconds!,
+                                let keptSmaller = q.notes.contains { $0.contains(PlanBuilder.easyRunLimitMarker) }
+                                XCTAssertGreaterThanOrEqual(peak, (keptSmaller ? 0.9 : 1.0) * rebuiltInput.recentWeeklySeconds!,
                                                             "\(label) rebuilt peak \(Int(peak / 60)) min")
                                 rebuiltPeaks += 1
                             }

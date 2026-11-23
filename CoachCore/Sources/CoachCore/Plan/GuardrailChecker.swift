@@ -97,6 +97,19 @@ public struct GuardrailLimits: Equatable, Sendable {
     /// `PlanHeuristics.regrowthReturnSteps` (0.65, 0.825, 1.0). Heuristic.
     public var regrowthReturnSteps: [Double] { didSet { regrowthReturnSteps = Self.valid(regrowthReturnSteps, \.regrowthReturnSteps) } }
 
+    /// Longest any planned training run may be, in seconds (F3's easy-run
+    /// limit, SPEC 3.5 rule 5 and F2): the plan builder sets it to the long-run
+    /// time cap that applies to the race or the runner's max session length,
+    /// whichever is shorter. Default `.infinity` (no cap). A race is exempt
+    /// (3.5 rule 3). Like the other limits, NaN, 0 or a negative value falls
+    /// back to the default (what zero limits should mean is open issue #42).
+    public var maxTrainingRunSeconds: Double { didSet { maxTrainingRunSeconds = Self.valid(maxTrainingRunSeconds, \.maxTrainingRunSeconds) } }
+    /// Whether each planned easy run must be at most as long as the week's
+    /// long run (F3, #23: the long run is the week's longest run). Default
+    /// false: the plan builder sets it for its own plans, but a plan the
+    /// adaptation engine cuts week by week (3.5 rule 5's long-run share can
+    /// leave an easy run longer than a shortened long run) is not held to it.
+    public var easyRunsWithinLongRun: Bool
     public init(measure: VolumeMeasure = .time,
                 maxWeeklyIncrease: Double = 0.10,
                 maxFourWeekIncrease: Double = 0.30,
@@ -115,7 +128,9 @@ public struct GuardrailLimits: Equatable, Sendable {
                 breakReturnSteps: [Double] = [0.70, 0.90, 1.00],
                 breakReturnMaxQualitySessions: [Int] = [0, 1],
                 regrowthMaxWeeklyRise: Double = PlanHeuristics.regrowthMaxWeeklyRise,
-                regrowthReturnSteps: [Double] = PlanHeuristics.regrowthReturnSteps) {
+                regrowthReturnSteps: [Double] = PlanHeuristics.regrowthReturnSteps,
+                maxTrainingRunSeconds: Double = .infinity,
+                easyRunsWithinLongRun: Bool = false) {
         self.measure = measure
         self.maxWeeklyIncrease = Self.valid(maxWeeklyIncrease, \.maxWeeklyIncrease)
         self.maxFourWeekIncrease = Self.valid(maxFourWeekIncrease, \.maxFourWeekIncrease)
@@ -135,6 +150,8 @@ public struct GuardrailLimits: Equatable, Sendable {
         self.breakReturnMaxQualitySessions = Self.valid(breakReturnMaxQualitySessions, \.breakReturnMaxQualitySessions)
         self.regrowthMaxWeeklyRise = Self.valid(regrowthMaxWeeklyRise, \.regrowthMaxWeeklyRise)
         self.regrowthReturnSteps = Self.valid(regrowthReturnSteps, \.regrowthReturnSteps)
+        self.maxTrainingRunSeconds = Self.valid(maxTrainingRunSeconds, \.maxTrainingRunSeconds)
+        self.easyRunsWithinLongRun = easyRunsWithinLongRun
     }
 
     /// Most quality sessions allowed in week `step` of the return ramp (3.5
@@ -167,7 +184,10 @@ public struct GuardrailLimits: Equatable, Sendable {
     /// value, and every default is valid, so building `default` never reads
     /// itself.
     static func valid(_ value: Double, _ field: KeyPath<GuardrailLimits, Double>) -> Double {
-        if value == .infinity && field == \.maxSingleRunIncrease { return value }
+        if value == .infinity && (field == \.maxSingleRunIncrease || field == \.maxTrainingRunSeconds) { return value }
+        // A cap of 0 would flag every run; it falls back like a negative one
+        // (open issue #42 asks what zero limits should mean).
+        if value == 0 && field == \.maxTrainingRunSeconds { return Self.default[keyPath: field] }
         guard value.isFinite, value >= 0 else { return Self.default[keyPath: field] }
         return value
     }
@@ -234,6 +254,12 @@ public enum GuardrailRule: String, CaseIterable, Equatable, Hashable, Sendable {
     case qualitySessions
     /// No volume growth in a week that overlaps a freeze (pain check-in, 3.5).
     case volumeFreeze
+    /// No planned easy run longer than the same week's long run, and no
+    /// planned training run longer than `maxTrainingRunSeconds` (F3's easy
+    /// runs and the long run, coaching convention, #23). A race is exempt
+    /// (3.5 rule 3) and is not the week's long run. Reported per run
+    /// (`GuardrailViolation.workoutID`).
+    case easyRunLength
 }
 
 /// One broken guardrail, explained in plain English.
@@ -508,10 +534,12 @@ public enum GuardrailChecker {
         let checked = weeks.indices.filter { weeks[$0].weekStart >= firstChecked && weeks[$0].weekStart <= lastChecked }
 
         var ctx = Context(weeks: weeks, limits: limits, timeZone: timeZone, units: units, regrowth: regrowth)
+        let plannedIDs = Set(planned.map(\.id))
         for i in checked {
             ctx.checkWeeklyIncrease(i)
             ctx.checkFourWeekIncrease(i)
             ctx.checkLongRunShare(i)
+            ctx.checkRunLength(i, planned: plannedIDs)
             ctx.checkQualitySessions(i)
             if freezes.contains(where: { $0.start < weeks[i].weekEnd && $0.end > weeks[i].weekStart }) {
                 ctx.checkFreeze(i)
@@ -856,6 +884,36 @@ public enum GuardrailChecker {
             let marathonText = marathonPlan ? " in a marathon plan" : ""
             violate(.longRunShare, i, measured: share, allowed: limit, unit: .fraction,
                     "the long run (\(time(seconds))) is \(PlanFormatting.percent(share)) of the week's \(time(total)) of running. The limit is \(PlanFormatting.percent(limit)) of weekly time\(marathonText), so at most \(time(total * limit)) for this week.")
+        }
+
+        /// F3's easy-run limit (#23): each planned easy or recovery run at most
+        /// as long as the week's longest long run (planned or done), and each
+        /// planned training run at most `maxTrainingRunSeconds`. A race is
+        /// exempt, and is never the week's long run (3.5 rule 3). A run with no
+        /// valid duration is not read.
+        mutating func checkRunLength(_ i: Int, planned: Set<String>) {
+            let all = weeks[i].workouts
+            let longest = all.filter { $0.kind == .long }.compactMap { $0.volume(.time) }.max()
+            let cap = limits.maxTrainingRunSeconds
+            for w in all where planned.contains(w.id) {
+                guard w.kind != .race, w.kind != .rest, let seconds = w.volume(.time) else { continue }
+                var allowed = Double.infinity
+                var reason = ""
+                if cap.isFinite, Self.exceeds(seconds, cap) {
+                    allowed = cap
+                    reason = "is longer than the \(PlanFormatting.volume(cap, .time)) a training run may be (the long-run cap for this race or your max session length)"
+                }
+                if limits.easyRunsWithinLongRun, w.kind == .easy || w.kind == .recovery, let long = longest, Self.exceeds(seconds, long), long < allowed {
+                    allowed = long
+                    reason = "is longer than the week's long run (\(PlanFormatting.volume(long, .time))), so it would be the longest run of the week"
+                }
+                guard allowed.isFinite else { continue }
+                let kind = w.kind == .long ? "long run" : w.kind.isQuality ? "quality session" : "easy run"
+                violations.append(GuardrailViolation(
+                    rule: .easyRunLength, weekStart: weeks[i].weekStart, measured: seconds, allowed: allowed, unit: .seconds,
+                    explanation: "Week of \(day(i)): the \(kind) of \(PlanFormatting.volume(seconds, .time)) \(reason). (Heuristic, SPEC F3 and 3.5 rule 5.)",
+                    workoutID: w.id))
+            }
         }
 
         mutating func checkQualitySessions(_ i: Int) {

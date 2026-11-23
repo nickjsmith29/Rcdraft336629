@@ -181,8 +181,10 @@ final class PlanBuilderSpikeBandTests: XCTestCase {
         let (old, _) = PlanBuilder.buildDiagnosed(i, history: h, timeZone: utc, shortenWarmUps: false)
         let o = try XCTUnwrap(old.plan)
         let w = p.weeks[5]
-        XCTAssertEqual(shape(o.weeks[5]), "e60 e60 q53 e60 q59 e60 L60")
-        XCTAssertEqual(shape(w), "e60 e60 q53 e60 q60 e60 L60")
+        // Easy time the 60-min cap holds back from the easy runs goes to the
+        // quality sessions' easy cool-down (F3), so both fill to the cap.
+        XCTAssertEqual(shape(o.weeks[5]), "e60 e60 q60 e60 q60 e60 L60")
+        XCTAssertEqual(shape(w), "e60 e60 q60 e60 q60 e60 L60")
         XCTAssertGreaterThanOrEqual(minutes(w), 412, shape(w))
         // It gains hard time too (a longer threshold set), not only volume.
         XCTAssertGreaterThan(hardShare(w) * w.trainingSeconds, hardShare(o.weeks[5]) * o.weeks[5].trainingSeconds)
@@ -193,14 +195,17 @@ final class PlanBuilderSpikeBandTests: XCTestCase {
         }
         let q = w.workouts.filter { $0.kind.isQuality }
         XCTAssertEqual(q.count, 2)
-        // Race pace, held by its kind's cap: the usual 15 and 10.
-        let racePace = try XCTUnwrap(q.first { $0.durationSeconds < 55 * 60 })
-        XCTAssertEqual(overhead(racePace).0, 15)
-        XCTAssertEqual(overhead(racePace).1, 10)
+        // Intervals: the usual 15 min warm-up; only the cool-down takes the
+        // easy time the cap holds back from the easy runs (and says so).
+        let intervals = try XCTUnwrap(q.first { $0.kind == .quality(.intervals) })
+        XCTAssertEqual(overhead(intervals).0, 15)
+        XCTAssertGreaterThanOrEqual(overhead(intervals).1, 10)
+        XCTAssertTrue((intervals.prescription?.purpose ?? "").contains("easy running"), intervals.prescription?.purpose ?? "")
         // Threshold, held by the session cap: shortened only as far as its main set reaches.
-        let threshold = try XCTUnwrap(q.first { $0.durationSeconds >= 55 * 60 })
+        let threshold = try XCTUnwrap(q.first { $0.kind == .quality(.threshold) })
         XCTAssertEqual(threshold.durationSeconds, 60 * 60)
         let (warm, cool) = overhead(threshold)
+        XCTAssertLessThan(warm, 15)
         XCTAssertLessThan(warm + cool, 25)
         XCTAssertGreaterThanOrEqual(warm, PlanHeuristics.shortWarmUpSeconds / 60)
         XCTAssertGreaterThanOrEqual(cool, PlanHeuristics.shortCoolDownSeconds / 60)
@@ -317,13 +322,15 @@ final class PlanBuilderSpikeBandTests: XCTestCase {
     /// minutes, even a 10-min warm-up and 5-min cool-down leave too little
     /// hard time for 16% of the week, so the week is still shortened to
     /// about hard / 0.165: 179 → 132 min (7 days, 240, marathon) and 135 →
-    /// 84 (6 days, 180, 5K). Keeping the volume as easy running would put the
+    /// 77 (6 days, 180, 5K, #23). Keeping the volume as easy running would put the
     /// week under SPEC 3.1's band; adding hard time would change the
     /// recovery week. Which to do is the owner's call (SPEC 3.1 against 3.5
     /// rule 1), so the shortened weeks are pinned here until it is decided.
+    /// Since #23 no easy run is longer than the week's long run, so the 5K
+    /// case's 31-minute easy run beside a 24-minute long run is cut to 24: 77.
     func testKnownGapSpikeCappedRecoveryWeeksStillShrinkToTheBand() throws {
         let cases: [(Int, Double, Double, Double?, Double)] = [(7, 240, Distance.marathon, nil, 132),
-                                                               (6, 180, Distance.fiveK, 45, 84)]
+                                                               (6, 180, Distance.fiveK, 45, 77)]
         for (count, weekly, distance, maxSession, expected) in cases {
             let days = Array(Self.all.prefix(count))
             let h = history(minutes: weekly, weeks: 4, days: days, longShare: nil)

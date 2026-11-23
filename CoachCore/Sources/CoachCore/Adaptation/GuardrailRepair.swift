@@ -64,7 +64,7 @@ enum GuardrailRepair {
     }
 
     static let fixable: Set<GuardrailRule> = [.weeklyIncrease, .fourWeekIncrease, .volumeFreeze, .longRunShare, .recoveryWeek,
-                                              .singleRunSpike, .qualitySessions]
+                                              .singleRunSpike, .qualitySessions, .easyRunLength]
 
     static func repair(plan: [PlannedWorkout], history: [PlannedWorkout], asOf: Date, freezes: [DateInterval],
                        context: AdaptationContext, regrowth: GuardrailRegrowth = .none) -> Result {
@@ -148,7 +148,7 @@ enum GuardrailRepair {
     /// before the weekly cuts, since it lowers the week's volume too.
     static func order(_ r: GuardrailRule) -> Int {
         [GuardrailRule.qualitySessions, .volumeFreeze, .recoveryWeek, .singleRunSpike, .weeklyIncrease, .fourWeekIncrease,
-         .longRunShare]
+         .longRunShare, .easyRunLength]
             .firstIndex(of: r) ?? 9
     }
 
@@ -243,6 +243,29 @@ enum GuardrailRepair {
                                            reason: "to keep it within the single-run spike rule: \(v.explanation)", context: ctx))
         case .qualitySessions:
             return swapExcessQuality(v, sessions: inWeek, plan: plan, context: ctx)
+        case .easyRunLength:
+            // An easy run longer than the week's long run, or any run over the
+            // run cap, is cut to the allowance (F3, #23). Quality sessions are
+            // never cut.
+            guard let id = v.workoutID, let i = inWeek.first(where: { plan[$0].id == id }),
+                  [.easy, .recovery, .long].contains(plan[i].kind), v.allowed.isFinite, v.allowed >= 0,
+                  plan[i].durationSeconds.isFinite else { return nil }
+            let seconds = PlanBuilder.floorMinute(v.allowed)
+            var out = plan
+            let c: Cut
+            if seconds >= 60 {
+                guard seconds < plan[i].durationSeconds else { return nil }
+                out[i] = plan[i].resized(toSeconds: seconds)
+                c = Cut(plan: out, shortened: [id], dropped: [], remaining: 0)
+            } else {
+                out.remove(at: i)
+                c = Cut(plan: out, shortened: [], dropped: [id], remaining: 0)
+            }
+            // No metric names an easy run against the long run, so the closest, the long-run duration, is cited.
+            let t = TriggerMetric(metric: .longRunDuration, value: v.measured, expectedHigh: v.allowed, unit: .seconds,
+                                  sourceID: id, detail: v.explanation)
+            return (c.plan, changes(c, week: week, trigger: t, rule: "SPEC F3 and 3.5 rule 5 (heuristic guardrail), F4, F9",
+                                    reason: "so no easy run is longer than the week's long run, or past the run cap: \(v.explanation)", context: ctx))
         }
         guard amount.isFinite, amount > 0 else { return nil }
 
