@@ -1,6 +1,8 @@
 # Personal Running Coach: Build Spec
 
-Version 0.6, November 21, 2026. Owner: Nick. Builder: Claude Code.
+Version 0.7, November 23, 2026. Owner: Nick. Builder: Claude Code.
+
+Changes in 0.7: 3.6 gives the default grade-adjusted pace curve (uphill from Minetti et al.'s energy cost of running shifted as Strava's model describes, downhill from Strava's two published points) [33][34]; F11's lap accuracy criterion is stated over many simulated runs.
 
 Changes in 0.6: 3.5 rule 6 defines a cut week by two limits (the spike rule and a 20% weekly rise) and grows the plan back by the higher of 20% over the week run and the return steps (65 / 82.5 / 100% of plan), measured against the original plan until a week is back at plan; 3.5 rule 7 bounds the weeks after a pain stop of more than 14 days by the return's own ceilings (#107).
 
@@ -134,6 +136,10 @@ Also (heuristics, coaching convention, not reviewed in depth): a recovery week e
 ### 3.6 Hills (grade-adjusted pace)
 - Strava's current GAP model was fitted from heart rate across about 6 million runs: efficiency (HR per unit speed) as a function of gradient. Its downhill benefit bottoms out around -9% (pace factor 0.88) and returns to flat by about -18%.
 - **Rule:** use a GAP curve as the default and personalize it from the athlete's own HR-versus-grade data once there are enough steady hilly runs. Targets on hilly routes are set in grade-adjusted pace.
+- **Default curve.** On a grade g (rise over run, 0.05 = 5%), the target running pace is the grade-adjusted target pace times a factor f(g); f above 1 is slower, below 1 faster. Grades are clamped to -45% to +45%, the range Minetti et al. measured [33].
+  - Uphill (g above 0): f(g) = Cr(g - 0.02) / Cr(0), and never below 1, where Cr(i) = 155.4i^5 - 30.4i^4 - 43.3i^3 + 46.3i^2 + 19.5i + 3.6 (J/kg/m) is Minetti et al.'s energy cost of running [33]. Strava reports that its heart-rate model's uphill slope matches the Minetti-based model, shifted right by about 2 percentage points [34]. This gives about 1.06 at +3%, 1.17 at +5%, 1.51 at +10% and 2.32 at +20%, and 1.0 up to +2%.
+  - Downhill (g below 0): f falls in a straight line from 1.0 at 0% to 0.88 at -9%, rises in a straight line back to 1.0 at -18%, and stays at 1.0 on steeper descents. The two points are Strava's published minimum and its return to flat [34]; the straight lines between them, and holding 1.0 past -18% (Strava's curve is slower there, by an amount it doesn't publish), are heuristics. Minetti's lab costs keep falling to -20% [33], but Strava's real-world data show a much smaller downhill benefit [34], so Minetti is not used downhill.
+  - Evidence: Minetti et al. is a treadmill study of 10 elite mountain runners [33]; Strava's model is fitted from heart rate on about 6 million real runs but is published only as a figure, not a formula [34]. So the curve is a reasonable default, not a validated model, which is why the rule above replaces it with the runner's own curve once their data allow.
 
 ### 3.7 Heat and humidity
 - Across 1.8 million marathon finishes, performance follows a quadratic curve with temperature; the best temperature is about 3.8 to 9.9°C depending on ability, and pace falls off increasingly as it gets warmer (El Helou et al. 2012). Heat also changes pacing more for faster runners (Ely et al. 2008).
@@ -211,7 +217,7 @@ IDs are stable so Claude Code can reference them in issues and tests.
   - HR ceiling on easy runs: if HR is above the cap, cue "ease off" even when pace is on target.
   - Cue only on sustained deviation (for example 20 to 30 seconds outside the band), with hysteresis and a minimum gap between cues; never in the first 60 seconds of a rep.
   - Rep countdowns, rep splits, and a short summary at each interval end.
-- **Accept when:** replaying simulated recordings (synthetic streams with GPS noise, hills and pace changes) through the cue engine gives no more than one false "speed up" per hilly mile, and the cue engine's pace estimate tracks lap-average pace within 5 sec/mile.
+- **Accept when:** replaying simulated recordings (synthetic streams with GPS noise, hills and pace changes) through the cue engine gives no more than one false "speed up" per hilly mile, and the cue engine's pace estimate tracks lap-average pace within 5 sec/mile. Read over many simulated runs (at least 200 seeded runs for each run type: steady, progression, repeats and hilly with GPS dropouts), at least 95% of full-mile laps are within 5 sec/mile and none is off by more than 10 sec/mile; a few laps can't meet 5 sec/mile even from the mean of the GPS readings, so "every lap" would test the simulated noise rather than the engine. The share and the cap are heuristics.
 
 ### F12. Race-day plan
 - Mile-by-mile pacing from the predicted time, adjusted for the course profile and forecast, plus a fueling and fluid plan by time. Fed straight to the voice coach.
@@ -436,7 +442,7 @@ Other decisions the build can make by default: Apple Health as the source of tru
 
 ## 12. References
 
-Numbered citations in sections 3.3, 3.5 and F3. References 1 to 15 match `docs/research/spec-evidence.md` (which also lists 20), 15 to 24 match `docs/research/pain-return-evidence.md`, 25 to 30 match `docs/research/short-long-run-progression.md` and 31 to 32 match `docs/research/easy-run-length.md`; those files record what each source was read for. Reference 12 (units) is listed there and not yet cited here, and references 26, 27, 30 and 32 are listed as background and not cited here. A description in square brackets stands in for a title that was not recorded when the source was read.
+Numbered citations in sections 3.3, 3.5, 3.6 and F3. References 1 to 15 match `docs/research/spec-evidence.md` (which also lists 20), 15 to 24 match `docs/research/pain-return-evidence.md`, 25 to 30 match `docs/research/short-long-run-progression.md`, 31 to 32 match `docs/research/easy-run-length.md` and 33 to 34 match `docs/research/grade-adjusted-pace.md`; those files record what each source was read for. Reference 12 (units) is listed there and not yet cited here, and references 26, 27, 30 and 32 are listed as background and not cited here. A description in square brackets stands in for a title that was not recorded when the source was read.
 
 1. Frandsen JSB, Hulme A, Parner ET, … Nielsen RO. How much running is too much? Identifying high-risk running sessions in a 5200-person cohort study. *BJSM* 2025;59(17):1203–1210. doi:10.1136/bjsports-2024-109380. https://pure.au.dk/portal/en/publications/how-much-running-is-too-much-identifying-high-risk-running-sessio/ ; BJSM blog summary: https://blogs.bmj.com/bjsm/?p=11751
 2. Buist I, et al. No effect of a graded training program on the number of running-related injuries in novice runners: an RCT. *Am J Sports Med* 2008;36(1):33–39. https://research.rug.nl/en/publications/no-effect-of-a-graded-training-program-on-the-number-of-running-r/
@@ -470,3 +476,5 @@ Numbered citations in sections 3.3, 3.5 and F3. References 1 to 15 match `docs/r
 30. Nike. [How to increase running mileage.] https://www.nike.com/a/how-to-increase-running-mileage
 31. Fitzgerald J. The Almighty Long Run: The Case for Running Long. Strength Running, 2016. https://strengthrunning.com/2016/08/long-run-case-for-running-long/
 32. Beck K. The Medium-Long Run: A Triathlete's Secret Weapon (on Pfitzinger's medium-long run). Active.com. https://www.active.com/running/articles/the-medium-long-run-a-triathlete-s-secret-weapon
+33. Minetti AE, Moia C, Roi GS, Susta D, Ferretti G. Energy cost of walking and running at extreme uphill and downhill slopes. *J Appl Physiol* 2002;93(3):1039–1046. https://iris.unibs.it/retrieve/ddc633e4-3c03-4e2e-e053-3705fe0a4c80/Minetti%20JAP%202002.pdf
+34. Robb D. An improved GAP model. Strava Engineering, 2017. https://medium.com/strava-engineering/an-improved-gap-model-8b07ae8886c3
