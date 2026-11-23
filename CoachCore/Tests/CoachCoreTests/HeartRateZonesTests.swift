@@ -182,6 +182,24 @@ final class HeartRateZonesTests: XCTestCase {
         XCTAssertFalse(est.isCorroborated)
     }
 
+    func testTopTwoAgreeAndThirdFarBelowKeepsHighest() throws {
+        let efforts = [race("a", minutes: 60, hr: 175), race("b", minutes: 60, hr: 173), race("c", minutes: 60, hr: 160)]
+        let est = try XCTUnwrap(LTHREstimator.estimate(from: efforts, asOf: now))
+        XCTAssertEqual(est.bpm, 175)
+        XCTAssertEqual(est.source.id, "a")
+        XCTAssertNil(est.setAside)
+        XCTAssertTrue(est.isCorroborated)
+    }
+
+    func testTwoAgreeingBadRecordingsAreNotCaught() throws {
+        // Pins the documented limit: the rule guards against one bad recording, not two that agree.
+        let efforts = [race("a", minutes: 60, hr: 200), race("b", minutes: 60, hr: 199), race("c", minutes: 60, hr: 171)]
+        let est = try XCTUnwrap(LTHREstimator.estimate(from: efforts, asOf: now))
+        XCTAssertEqual(est.bpm, 200)
+        XCTAssertNil(est.setAside)
+        XCTAssertTrue(est.isCorroborated)
+    }
+
     func testNonQualifyingGlitchDoesNotCountTowardAgreement() throws {
         // A too-short race at a high HR is filtered out before the agreement check.
         let efforts = [race("5k", minutes: 22, hr: 190), race("10mi", minutes: 85, hr: 170)]
