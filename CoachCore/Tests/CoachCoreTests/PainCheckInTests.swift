@@ -198,4 +198,13 @@ final class PainCheckInTests: XCTestCase {
         XCTAssertEqual(r.checkIn.score, 6)
         XCTAssertEqual(r.triggers, [.scoreAtOrAbove(threshold: 4), .rise(previous: 1, rise: 5)])
     }
+
+    func testSameInstantCheckInsEachCountTowardPersistentPain() throws {
+        let d2 = checkIn(day: 2, 4), d3a = checkIn(day: 3, 4), d3b = checkIn(day: 3, 5)
+        for order in [[d2, d3a, d3b], [d3b, d3a, d2], [d3a, d2, d3b]] {
+            let r = try response(evaluate(order))
+            XCTAssertEqual(r.checkIn.score, 5)
+            XCTAssertTrue(r.suggestClinician, "order \(order.map(\.score))")
+        }
+    }
 }

@@ -122,7 +122,10 @@ public enum PainCheckInOutcome: Equatable, Sendable {
 /// `.noAction`, so one high score never swaps a second quality session. The
 /// caller keeps enforcing the stored freeze itself until `freezeEnd`. The
 /// caller must evaluate on every new check-in, because only the latest is
-/// looked at. Check-ins at the same instant count as one, with the highest score.
+/// looked at. For the latest and the "previous" score of the rise test, check-ins at the
+/// same instant count as one, with the highest score (never less cautious than
+/// input order). For `persistentCount` (the clinician prompt) every valid
+/// check-in counts, so two at one instant count twice.
 public enum PainCheckInRule {
     /// - Parameters:
     ///   - tracksPain: the explicit flag from the goal interview (F2). False
@@ -147,16 +150,12 @@ public enum PainCheckInRule {
                                 timeZone: TimeZone,
                                 limits: PainRuleLimits = .default) -> PainCheckInOutcome {
         guard tracksPain else { return .notTracked }
-        // Check-ins at the same instant are one report: keep the highest score
-        // (the cautious choice), whatever the input order, the same collapse the
-        // adaptation engine applies. So a 2 and a 6 at one time read as 6, and
-        // never as a rise from the 2.
-        var valid: [PainCheckIn] = []
-        for c in checkIns
-            .filter({ PainCheckIn.validScores.contains($0.score) && $0.date <= asOf })
-            .sorted(by: { $0.date != $1.date ? $0.date < $1.date : $0.score < $1.score }) {
-            if let last = valid.last, last.date == c.date { valid[valid.count - 1] = c } else { valid.append(c) }
-        }
+        // `reports` keeps every valid check-in (date, then score ascending, so ties
+        // are order-independent); `valid` merges same-instant ones for latest/previous.
+        let reports = checkIns
+            .filter { PainCheckIn.validScores.contains($0.score) && $0.date <= asOf }
+            .sorted { $0.date != $1.date ? $0.date < $1.date : $0.score < $1.score }
+        let valid = collapsingSameInstant(reports)
         guard let latest = valid.last else { return .noCheckIns }
         if let applied = lastAppliedCheckIn, latest.date <= applied { return .noAction }
 
@@ -184,7 +183,7 @@ public enum PainCheckInRule {
         let swap = firstQuality.flatMap { q in
             q.date >= asOf ? QualitySwap(original: q, replacement: q.swappedToEasy()) : nil
         }
-        let recent = valid.suffix(limits.persistentCount)
+        let recent = reports.suffix(limits.persistentCount)
         let persistent = limits.persistentCount > 0
             && recent.count == limits.persistentCount
             && recent.allSatisfy { $0.score >= limits.highScore }
@@ -194,6 +193,16 @@ public enum PainCheckInRule {
                                   persistent: persistent, timeZone: timeZone, limits: limits)
         return .act(PainResponse(checkIn: latest, triggers: triggers, freezeStart: latest.date, freezeEnd: freezeEnd,
                                  swap: swap, suggestClinician: persistent, explanation: explanation))
+    }
+
+    /// Merges check-ins at the same instant into one, keeping the highest score.
+    /// `sorted` must be ordered by date, then score ascending.
+    private static func collapsingSameInstant(_ sorted: [PainCheckIn]) -> [PainCheckIn] {
+        var out: [PainCheckIn] = []
+        for c in sorted {
+            if let last = out.last, last.date == c.date { out[out.count - 1] = c } else { out.append(c) }
+        }
+        return out
     }
 
     private static func explain(latest: PainCheckIn, triggers: [PainTrigger], freezeEnd: Date, swap: QualitySwap?,
