@@ -225,11 +225,12 @@ extension GuardrailChecker {
 
     /// For each week, whether the marathon long-run share applies (SPEC 3.5
     /// rule 5): the week is in or before the week of a race of marathon
-    /// distance (`RaceCategory.marathon`). A race of unknown distance is not
+    /// distance (`RaceCategory.isMarathonDistance`, within 0.5% of 42,195 m; a
+    /// race from 30 km up to it is not one, #30). A race of unknown distance is not
     /// one (the conservative reading: the usual share applies).
     static func marathonWeeks(_ weeks: [PlanWeek]) -> [Bool] {
         let last = weeks.lastIndex { w in
-            w.workouts.contains { $0.kind == .race && $0.distanceMeters.flatMap(RaceCategory.init(meters:)) == .marathon }
+            w.workouts.contains { $0.kind == .race && RaceCategory.isMarathonDistance(meters: $0.distanceMeters) }
         }
         return weeks.indices.map { i in last.map { i <= $0 } ?? false }
     }

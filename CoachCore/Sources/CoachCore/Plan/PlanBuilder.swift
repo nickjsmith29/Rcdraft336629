@@ -517,11 +517,12 @@ public enum PlanBuilder {
             if distance <= BlendedPredictor.shortTargetLimit {
                 predicted = RacePredictor.riegel(knownMeters: a.distanceMeters, knownSeconds: a.seconds, targetMeters: distance)
             } else {
-                // Marathon (3.9): Vickers-Vertosick from the anchor and weekly miles,
+                // Marathon (3.9; Vickers-Vertosick predicts a marathon time, so only
+                // at marathon distance, #30): Vickers-Vertosick from the anchor and weekly miles,
                 // the miles estimated from weekly time at easy pace. Easy pace is
                 // slower than average training pace, so this underestimates miles
                 // and errs slow.
-                if let e = easyPace {
+                if RaceCategory.isMarathonDistance(meters: distance), let e = easyPace {
                     let miles = recentWeekly / e / Distance.mile * 1000
                     predicted = VickersVertosick.marathonSeconds(raceMeters: a.distanceMeters, raceSeconds: a.seconds,
                                                                 weeklyMiles: miles)
@@ -531,7 +532,9 @@ public enum PlanBuilder {
                     // bound the goal pace, which makes the 3% cap lenient, not strict.
                     optimisticBound = RacePredictor.riegel(knownMeters: a.distanceMeters, knownSeconds: a.seconds,
                                                            targetMeters: distance)
-                    notes.append("No marathon prediction could be made (it needs predictedRaceSeconds, or an anchor from 5K to the half marathon and an easy pace), so race pace is only held back from a goal far faster than plain Riegel suggests.")
+                    let isMarathon = RaceCategory.isMarathonDistance(meters: distance)
+                    notes.append(isMarathon ? "No marathon prediction could be made (it needs predictedRaceSeconds, or an anchor from 5K to the half marathon and an easy pace), so race pace is only held back from a goal far faster than plain Riegel suggests."
+                                 : "No race-time prediction could be made for this distance (the predictors cover up to the half marathon and the marathon itself, and it needs predictedRaceSeconds), so race pace is only held back from a goal far faster than plain Riegel suggests.")
                 }
             }
         }
@@ -1149,6 +1152,11 @@ private struct Builder {
     }
 
     var c: RaceCategory { v.category }
+    /// Whether the race is of marathon distance (3.5 rule 5, #30), which the
+    /// marathon long-run allowances need; category `.marathon` alone starts at 30 km.
+    var isMarathonRace: Bool { RaceCategory.isMarathonDistance(meters: input.raceDistanceMeters) }
+    /// Longest long run for this race (3.5 rule 5: 180 minutes at marathon distance, else the category's).
+    var longRunCap: Double { H.longRunCap(c, isMarathonDistance: isMarathonRace) }
     var growth: Double { min(H.weeklyGrowth, limits.maxWeeklyIncrease * 0.8) }
     var recoveryRatio: Double { min(H.recoveryWeekRatio, limits.recoveryWeekMaxRatio - 0.05) }
     var margin: Double { H.guardrailMargin }
@@ -1158,7 +1166,7 @@ private struct Builder {
     /// marathon ceiling in a marathon plan (the race session has the goal
     /// distance, so every plan week is in or before it), else the usual one.
     var longRunShareLimit: Double {
-        c == .marathon ? limits.marathonLongRunCeiling : limits.maxLongRunShare
+        isMarathonRace ? limits.marathonLongRunCeiling : limits.maxLongRunShare
     }
 
     /// Most of a week of `total` seconds the long run may take, in seconds,
@@ -1171,13 +1179,13 @@ private struct Builder {
     /// the spike rule and the time caps.
     func longRunRoom(total: Double, usualShare: Double) -> Double {
         let usual = usualShare * total
-        guard c == .marathon else { return usual }
+        guard isMarathonRace else { return usual }
         let extended = min((longRunShareLimit - 0.02) * total, H.marathonLongRunTargetSeconds)
         return max(usual, extended)
     }
 
     func longRunFit(rest: Double) -> Double {
-        PlanBuilder.longRunFit(rest: rest, marathon: c == .marathon, limits: limits)
+        PlanBuilder.longRunFit(rest: rest, marathon: isMarathonRace, limits: limits)
     }
 
     // MARK: Phases and recovery weeks
@@ -1415,7 +1423,7 @@ private struct Builder {
         guard !drafts.isEmpty else { return drafts }
         let total = drafts.reduce(0) { $0 + $1.duration }
         let minEasy = H.minimumEasyRunSeconds
-        let longMax = min(ctx.longTarget, H.longRunCap(c),
+        let longMax = min(ctx.longTarget, longRunCap,
                           PlanBuilder.floorMinute(longRunRoom(total: total, usualShare: limits.maxLongRunShare - 0.02)),
                           ctx.sessionCap)
         func isEasy(_ k: Int) -> Bool { drafts[k].kind == .easy }
@@ -1677,7 +1685,7 @@ private struct Builder {
                 let longTarget: Double
                 if isTaper { longTarget = 0.7 * prevLong } else if recovery { longTarget = 0.8 * prevLong } else {
                     // At most 10 minutes a week (F3) and within the spike rule (3.5 rule 1).
-                    longTarget = min(prevLong + H.longRunStepSeconds, H.longRunCap(c), cap)
+                    longTarget = min(prevLong + H.longRunStepSeconds, longRunCap, cap)
                 }
                 return WeekContext(phase: phases[i], recovery: recovery, taper: isTaper, floor: floor,
                                    longTarget: longTarget,
@@ -2099,7 +2107,7 @@ private struct Builder {
         // Long run.
         let share = min(H.longRunShare(runDays: estDays), limits.maxLongRunShare - 0.02)
         var long = ctx.longDay == nil ? 0
-            : PlanBuilder.floorMinute(min(ctx.longTarget, longRunRoom(total: volume, usualShare: share), H.longRunCap(c),
+            : PlanBuilder.floorMinute(min(ctx.longTarget, longRunRoom(total: volume, usualShare: share), longRunCap,
                                           maxSession))
         let longDays = long > 0 ? [ctx.longDay!] : []
 
@@ -2181,7 +2189,7 @@ private struct Builder {
         // the easy time under the easy floor: it gives back up to its extra
         // time first (heuristic; the usual share would have left that room).
         let usualLong = ctx.longDay == nil ? 0
-            : PlanBuilder.floorMinute(min(ctx.longTarget, share * volume, H.longRunCap(c), maxSession))
+            : PlanBuilder.floorMinute(min(ctx.longTarget, share * volume, longRunCap, maxSession))
         let easyLeft = volume - long - quality.reduce(0) { $0 + $1.duration }
         if usualLong > 0, long > usualLong, easyLeft > 0, easyLeft < H.minimumEasyRunSeconds,
            ctx.days.contains(where: { !longDays.contains($0) && !qDays.contains($0) }) {
@@ -2202,7 +2210,7 @@ private struct Builder {
             long = 0
         } else if long > 0 && long < H.minimumEasyRunSeconds {
             let room = min(PlanBuilder.floorMinute(longRunRoom(total: volume, usualShare: limits.maxLongRunShare - 0.02)),
-                           ctx.longRaiseCap, maxSession, H.longRunCap(c), volume - qualityTime)
+                           ctx.longRaiseCap, maxSession, longRunCap, volume - qualityTime)
             if room >= H.minimumEasyRunSeconds {
                 long = H.minimumEasyRunSeconds
             } else {
@@ -2267,7 +2275,7 @@ private struct Builder {
         // still doesn't fit is left out, and the week says so (#79).
         if easyTotal >= 60, let li = drafts.firstIndex(where: { $0.kind == .long }) {
             let rest = drafts.reduce(0) { $0 + $1.duration } - drafts[li].duration
-            let limit = min(longRunFit(rest: rest), ctx.longRaiseCap, maxSession, H.longRunCap(c))
+            let limit = min(longRunFit(rest: rest), ctx.longRaiseCap, maxSession, longRunCap)
             let extra = PlanBuilder.floorMinute(min(easyTotal, limit - drafts[li].duration))
             if extra >= 60 {
                 drafts[li] = longSession(day: drafts[li].day, seconds: drafts[li].duration + extra, finish: finish, ctx: ctx)

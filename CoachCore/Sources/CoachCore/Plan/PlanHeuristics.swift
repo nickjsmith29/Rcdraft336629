@@ -15,6 +15,19 @@ public enum RaceCategory: String, CaseIterable, Equatable, Hashable, Sendable {
         default: self = .marathon
         }
     }
+
+    /// Whether a race distance is "a race of marathon distance", the case
+    /// SPEC 3.5 rule 5's marathon allowances apply to (the 45% long-run share
+    /// ceiling and the 180-minute long-run cap): within
+    /// `PlanFormatting.raceNameTolerance` (0.5%, a heuristic) of 42,195 m, the
+    /// tolerance race names use. A race from 30 km up to that is category
+    /// `.marathon` for F3's other heuristics but is planned with the usual
+    /// share and the 150-minute default cap (#30). A nil, NaN or infinite
+    /// distance is not marathon distance (the conservative reading).
+    public static func isMarathonDistance(meters: Double?) -> Bool {
+        guard let m = meters, m.isFinite else { return false }
+        return abs(m - Distance.marathon) / Distance.marathon <= PlanFormatting.raceNameTolerance
+    }
 }
 
 /// The plan builder's tunable numbers (SPEC.md F3). **Every value here is a
@@ -155,13 +168,16 @@ public enum PlanHeuristics {
     /// Long-run growth per week (F3), in seconds.
     public static let longRunStepSeconds: Double = 10 * 60
 
-    /// Longest long run for the distance, in seconds.
-    public static func longRunCap(_ c: RaceCategory) -> Double {
+    /// Longest long run for the distance, in seconds. The 180 minutes of SPEC
+    /// 3.5 rule 5 apply only at marathon distance (`isMarathonDistance`, from
+    /// `RaceCategory.isMarathonDistance(meters:)`); a race from 30 km up to it
+    /// gets rule 5's 150-minute default cap (#30).
+    public static func longRunCap(_ c: RaceCategory, isMarathonDistance: Bool) -> Double {
         switch c {
         case .fiveK: return 90 * 60
         case .tenK: return 105 * 60
         case .half: return 135 * 60
-        case .marathon: return 180 * 60
+        case .marathon: return (isMarathonDistance ? 180 : 150) * 60
         }
     }
 
