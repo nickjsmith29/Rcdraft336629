@@ -19,7 +19,9 @@ final class LongRunGateFloorFollowUpTests: XCTestCase {
     private func records(minutes: Double, qualifying: Bool) -> [LongRunRecord] {
         [-2, -1].map { w in
             LongRunRecord(activityID: "old-l\(-w)", date: F.date(week: w, day: 5), plannedSeconds: minutes * 60,
-                          movingSeconds: minutes * 60, decouplingPercent: qualifying ? 2 : 8)
+                          movingSeconds: minutes * 60, decouplingPercent: qualifying ? 2 : 8,
+                          averageHeartRate: qualifying && minutes <= 40 ? F.zones.easyCeiling - 10 : nil,
+                          easyCeiling: F.zones.easyCeiling)
         }
     }
 
@@ -42,11 +44,13 @@ final class LongRunGateFloorFollowUpTests: XCTestCase {
 
     /// Six weeks of the usual plan with every long run at `long` min, each
     /// run as planned from Monday of week 0 to the end of week 5.
-    private func sixWeeks(records: [LongRunRecord], long: Double) -> F.Driver {
+    /// `heartRate: false` runs them with no heart rate recorded, so a short run
+    /// can't count by easy heart rate (#170) and the held gate stays held.
+    private func sixWeeks(records: [LongRunRecord], long: Double, heartRate: Bool = true) -> F.Driver {
         var d = F.Driver(plan: F.weeks(0..<6, longMinutes: { _ in long }), context: F.context())
         d.state.longRuns = records
         d.day(F.date(week: 0, day: 0, hour: 5))
-        d.follow(until: F.date(week: 5, day: 6, hour: 23)) { _ in F.RunSpec() }
+        d.follow(until: F.date(week: 5, day: 6, hour: 23)) { _ in F.RunSpec(heartRate: heartRate) }
         return d
     }
 
@@ -72,8 +76,10 @@ final class LongRunGateFloorFollowUpTests: XCTestCase {
 
     func testSubFloorLongRunsOverTheGateKeepRunningAndTheRecordsGrow() {
         // 19-min long runs on 18-min records that don't qualify, 6 weeks:
-        // each is held at 18 min, run and recorded; none is rested.
-        let d = sixWeeks(records: records(minutes: 18, qualifying: false), long: 19)
+        // each is held at 18 min, run and recorded; none is rested. The runs
+        // carry no heart rate: with an easy one they would qualify by #170's
+        // short-run route and the gate would open (LongRunShortRouteTests).
+        let d = sixWeeks(records: records(minutes: 18, qualifying: false), long: 19, heartRate: false)
         let ids = (0..<6).map { "l\($0)" }
         XCTAssertEqual(d.state.longRuns.count, 2 + 6)
         XCTAssertEqual(d.state.longRuns.suffix(6).map(\.plannedSeconds), Array(repeating: 18 * 60, count: 6))

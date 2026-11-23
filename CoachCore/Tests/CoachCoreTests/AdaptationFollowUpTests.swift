@@ -527,7 +527,12 @@ final class AdaptationFollowUpTests: XCTestCase {
         // 21, #107, #109). The recovery cadence (3.5) then makes week 14 a
         // recovery week at about 80% of week 13, and week 15 comes back near
         // plan.
-        XCTAssertGreaterThanOrEqual(volume(week(13), d.history), 0.8 * volume(week(13), original), "\(ran)")
+        // #170: the 20-minute long run of the cut week was easy, so it now
+        // counts toward the long-run gate (before, a run under 40 min never
+        // did) and week 13's long run is held less (77 min, not 70). The
+        // guardrails then fit the easy runs around it, so the week lands near
+        // 75% of plan rather than 82%.
+        XCTAssertGreaterThanOrEqual(volume(week(13), d.history), 0.7 * volume(week(13), original), "\(ran)")
         XCTAssertGreaterThanOrEqual(volume(week(14), d.history), 0.8 * volume(week(13), d.history) - 10 * 60, "\(ran)")
         XCTAssertGreaterThanOrEqual(volume(week(15), d.history), 0.8 * volume(week(15), original), "\(ran)")
         XCTAssertGreaterThanOrEqual(volume(week(16), d.plan), 0.85 * volume(week(16), original))

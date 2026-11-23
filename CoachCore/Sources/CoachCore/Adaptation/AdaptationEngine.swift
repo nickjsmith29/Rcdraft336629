@@ -72,7 +72,11 @@ public struct AdaptationOutcome: Equatable, Sendable {
 ///    flags it for the debrief (F6).
 /// 4. **Long runs** progress only when the last `longRunQualifyingCount`
 ///    long runs were run to `longRunCompletionShare` of their planned time
-///    with steady pace-to-HR decoupling under `longRunDecouplingLimit` (3.3);
+///    with steady pace-to-HR decoupling under `longRunDecouplingLimit` (3.3).
+///    A long run too short for a decoupling reading (moving time of at most
+///    `DecouplingOptions.minimumMovingSeconds`) counts instead when its
+///    average heart rate stayed below the top of zone 2 (heuristic, SPEC 3.3,
+///    #170);
 ///    the step is then at most `longRunStepSeconds` above the longest long run
 ///    planned among the last `longRunReferenceRuns`. Otherwise the next long
 ///    run is held at that length. Until `longRunQualifyingCount` long runs are
@@ -152,7 +156,9 @@ public enum AdaptationEngine {
         if kind == .long, let m = matched {
             w.state.longRuns.append(LongRunRecord(activityID: a.id, date: a.start, plannedSeconds: m.durationSeconds,
                                                   movingSeconds: assessment.metrics.movingSeconds,
-                                                  decouplingPercent: assessment.metrics.decoupling?.percent))
+                                                  decouplingPercent: assessment.metrics.decoupling?.percent,
+                                                  averageHeartRate: assessment.metrics.key?.heartRate,
+                                                  easyCeiling: context.zones.easyCeiling))
         }
         w.paceRules(asOf: end)
         w.easyCapRule()
@@ -705,9 +711,22 @@ public enum AdaptationEngine {
             // last few, so a short recovery-week or trimmed long run does not
             // pull the next one down.
             let reference = state.longRuns.suffix(max(q, limits.longRunReferenceRuns)).map(\.plannedSeconds).max() ?? 0
+            // Heuristic (SPEC 3.3, #170): a run with at most the decoupling
+            // minimum of moving time (decoupling needs strictly more, the same
+            // `DecouplingOptions` value `RunMetrics` measures with) is judged by
+            // its own moving time, never by the plan's.
+            let decouplingMinimum = DecouplingOptions.default.minimumMovingSeconds
+            func tooShortForDecoupling(_ r: LongRunRecord) -> Bool { r.movingSeconds <= decouplingMinimum }
+            func easyByHeartRate(_ r: LongRunRecord) -> Bool {
+                guard let hr = r.averageHeartRate, let ceiling = r.easyCeiling, hr.isFinite, ceiling.isFinite else { return false }
+                return hr < ceiling
+            }
             func qualifies(_ r: LongRunRecord) -> Bool {
-                r.movingSeconds >= limits.longRunCompletionShare * r.plannedSeconds
-                    && (r.decouplingPercent.map { $0 < limits.longRunDecouplingLimit } ?? false)
+                guard r.movingSeconds >= limits.longRunCompletionShare * r.plannedSeconds else { return false }
+                // Heuristic (SPEC 3.3, #170): a short run takes only the heart-rate
+                // route; a longer one needs decoupling under the limit.
+                if tooShortForDecoupling(r) { return easyByHeartRate(r) }
+                return r.decouplingPercent.map { $0 < limits.longRunDecouplingLimit } ?? false
             }
             let open = recent.count >= q && recent.allSatisfy(qualifies)
             let allowed = open ? reference + limits.longRunStepSeconds : reference
@@ -730,7 +749,22 @@ public enum AdaptationEngine {
                                           detail: floor.map { "\(planned); the gate allows at most \(AdaptationFormatting.minutes(allowed)), under the \(AdaptationFormatting.minutes($0)) floor" }
                                               ?? "\(planned); at most \(AdaptationFormatting.minutes(allowed)) allowed")]
             for r in recent {
-                if let d = r.decouplingPercent {
+                if tooShortForDecoupling(r) {
+                    let ran = "long run \(r.activityID) on \(day(r.date)): \(AdaptationFormatting.minutes(r.movingSeconds)) of \(AdaptationFormatting.minutes(r.plannedSeconds)) planned"
+                    if let hr = r.averageHeartRate, let ceiling = r.easyCeiling, hr.isFinite, ceiling.isFinite {
+                        let verdict = easyByHeartRate(r) ? "below" : "at or above"
+                        let unfinished = r.movingSeconds < limits.longRunCompletionShare * r.plannedSeconds ? ", but not finished" : ""
+                        triggers.append(TriggerMetric(metric: .longRunDuration, value: r.movingSeconds,
+                                                      expectedLow: limits.longRunCompletionShare * r.plannedSeconds, unit: .seconds,
+                                                      sourceID: r.activityID,
+                                                      detail: "\(ran); too short for a decoupling reading, so heart rate decides: average heart rate \(Int(hr.rounded())) bpm was \(verdict) the top of zone 2 (\(Int(ceiling.rounded())) bpm)\(unfinished)"))
+                    } else {
+                        triggers.append(TriggerMetric(metric: .longRunDuration, value: r.movingSeconds,
+                                                      expectedLow: limits.longRunCompletionShare * r.plannedSeconds, unit: .seconds,
+                                                      sourceID: r.activityID,
+                                                      detail: "\(ran); too short for a decoupling reading, and no heart rate recorded"))
+                    }
+                } else if let d = r.decouplingPercent {
                     triggers.append(TriggerMetric(metric: .decoupling, value: d, expectedHigh: limits.longRunDecouplingLimit, unit: .percent,
                                                   sourceID: r.activityID,
                                                   detail: String(format: "long run %@ on %@: decoupling %.1f%% over %@ of %@ planned",
@@ -745,8 +779,8 @@ public enum AdaptationEngine {
             }
             let why = open
                 ? "the step is limited to \(AdaptationFormatting.minutes(limits.longRunStepSeconds))"
-                : "your last \(q == 1 ? "long run was" : "\(q) long runs were") not all completed at target duration with decoupling under \(Int(limits.longRunDecouplingLimit))%"
-            let gate = "Long runs progress only when decoupling stays under \(Int(limits.longRunDecouplingLimit))% at the target duration."
+                : "your last \(q == 1 ? "long run was" : "\(q) long runs were") not all completed at target duration with decoupling under \(Int(limits.longRunDecouplingLimit))% (or, for a run too short for decoupling, an average heart rate below the top of zone 2)"
+            let gate = "Long runs progress only when decoupling stays under \(Int(limits.longRunDecouplingLimit))% at the target duration; a long run too short for a decoupling reading counts when its average heart rate stays below the top of zone 2 (heuristic)."
             plan[i] = next.resized(toSeconds: allowed)
             let held = "\(AdaptationFormatting.minutes(allowed)) instead of \(AdaptationFormatting.minutes(next.durationSeconds))"
             let explanation: String

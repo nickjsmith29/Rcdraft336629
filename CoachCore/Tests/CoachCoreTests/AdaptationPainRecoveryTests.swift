@@ -691,7 +691,12 @@ final class AdaptationPainRecoveryTests: XCTestCase {
         let planned = F.weekVolume(3, d.plan)
         XCTAssertLessThan(planned, 0.9 * 214 * 60, "the guardrails hold week 3 below the pre-stop plan")
         for day in 0..<7 { d.runAsPlanned(on: F.date(week: 3, day: day)) }
-        XCTAssertEqual(F.weekVolume(3, d.history), planned, accuracy: 60)
+        // #170: the trimmed long runs of the return are under 40 min and were
+        // easy, so the long-run gate may let week 3's long run step up by the
+        // gate's step on that morning (and the guardrails re-fit the week around
+        // it): it is never less than planned and still far short of the reference.
+        XCTAssertGreaterThanOrEqual(F.weekVolume(3, d.history), planned - 60)
+        XCTAssertLessThan(F.weekVolume(3, d.history), 0.9 * 214 * 60)
         d.day(F.date(week: 4, day: 0, hour: 5))
         XCTAssertNotNil(d.state.painRecovery.painReturn, "everything planned was run, but it is short of 90% of 214 min")
         XCTAssertTrue(d.changes.contains { $0.kind == .painReturnRepeated && $0.explanation.contains("planned before the stop") })
