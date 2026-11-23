@@ -27,7 +27,9 @@ final class EasyRunLimitTests: XCTestCase {
                   fitnessAnchor: RaceEquivalent(distanceMeters: Distance.fiveK, seconds: 25 * 60))
     }
 
-    private func build(_ i: PlanInput) -> PlanBuildResult { PlanBuilder.build(i, timeZone: utc) }
+    private func build(_ i: PlanInput, history: [PlannedWorkout] = []) -> PlanBuildResult {
+        PlanBuilder.build(i, history: history, timeZone: utc)
+    }
 
     private func minutes(_ w: PlannedWorkout) -> Double { w.durationSeconds / 60 }
 
@@ -39,7 +41,7 @@ final class EasyRunLimitTests: XCTestCase {
     }
 
     /// Asserts F3's limits on every week of a plan; returns the failures.
-    private func problems(_ plan: TrainingPlan, _ i: PlanInput) -> [String] {
+    private func problems(_ plan: TrainingPlan, _ i: PlanInput, history: [PlannedWorkout] = []) -> [String] {
         var out: [String] = []
         let cap = runCap(i)
         for w in plan.weeks {
@@ -57,56 +59,81 @@ final class EasyRunLimitTests: XCTestCase {
             }
         }
         let limits = GuardrailLimits(maxTrainingRunSeconds: cap, easyRunsWithinLongRun: true)
-        let report = GuardrailChecker.check(history: [], planned: plan.weeks.flatMap(\.workouts), timeZone: utc, limits: limits)
+        let report = GuardrailChecker.check(history: history, planned: plan.weeks.flatMap(\.workouts), timeZone: utc, limits: limits)
         if !report.passed { out.append("guardrails: \(report.violations.map(\.explanation))") }
         return out
     }
 
     // MARK: The issue's examples
 
-    func testTenKThreeDaysAt330HasNoEasyRunOverTheLongRun() throws {
+    private func shape(_ w: TrainingPlanWeek) -> [String] {
+        w.workouts.map { x in
+            let tag = x.kind == .long ? "L" : x.kind == .easy ? "e" : x.kind == .race ? "R" : "q"
+            return "\(tag)\(Int((x.durationSeconds / 60).rounded()))"
+        }
+    }
+
+    /// Before (main): 330 min on Tue/Thu/Sat drafted e158 q67 L105; 400 min e228 q67 L105 (3 days), e114 q67 e114 L105 (4 days).
+    func testTenKThreeDaysAt330KeepsItsVolumeWhereTheRulesAllow() throws {
         let i = input(distance: Distance.tenK, days: [.tuesday, .thursday, .saturday], weekly: 330)
         let plan = try XCTUnwrap(build(i).plan)
         XCTAssertEqual(problems(plan, i), [])
         let first = plan.weeks[0]
-        let long = try XCTUnwrap(first.workouts.first { $0.kind == .long })
-        XCTAssertLessThanOrEqual(long.durationSeconds, 105 * 60)
-        for e in first.workouts where e.kind == .easy { XCTAssertLessThanOrEqual(e.durationSeconds, long.durationSeconds) }
-        XCTAssertLessThan(first.trainingSeconds, 330 * 60, "a smaller week")
-        XCTAssertTrue(first.workouts.contains { $0.prescription?.purpose.contains("kept smaller") ?? false })
-        XCTAssertTrue(plan.notes.contains { $0.contains("kept smaller") && $0.contains("no easy run is longer than the week's long run") },
-                      "\(plan.notes)")
+        // L near its 105-minute cap, the easy run and the quality day (its cool-down takes the
+        // held-back time, the hard minutes unchanged) up to it: about 309 of 330.
+        XCTAssertEqual(shape(first), ["q103", "e103", "L103"])
+        XCTAssertEqual(first.trainingSeconds / 60, 309, accuracy: 3)
+        let note = try XCTUnwrap(first.workouts.compactMap { $0.prescription?.purpose }.first { $0.contains("of 330 minutes") })
+        XCTAssertTrue(note.contains("This week is 309 of 330 minutes so that no easy run is longer than the long run"), note)
+        XCTAssertTrue(plan.notes.contains { $0.contains(PlanBuilder.easyRunLimitMarker) }, "\(plan.notes)")
         let share = try XCTUnwrap(first.easyShare)
         XCTAssertTrue((0.75...0.85).contains(share), "\(share)")
+        // The long run does not collapse: every build week holds it near its cap.
+        for w in plan.weeks where !w.isRaceWeek && !w.isRecoveryWeek {
+            let long = try XCTUnwrap(w.workouts.first { $0.kind == .long }, "week \(w.index)")
+            XCTAssertGreaterThanOrEqual(long.durationSeconds, 95 * 60, "week \(w.index)")
+        }
     }
 
     func testTenKAt400OnThreeAndFourDays() throws {
-        for days in [[PlanWeekday.tuesday, .thursday, .saturday], [.tuesday, .thursday, .friday, .sunday]] {
-            let i = input(distance: Distance.tenK, days: days, weekly: 400)
-            let plan = try XCTUnwrap(build(i).plan, "\(days.count) days")
-            XCTAssertEqual(problems(plan, i), [], "\(days.count) days")
-            let all = plan.weeks.flatMap(\.workouts).filter { $0.kind != .race }
-            XCTAssertLessThanOrEqual(all.map(\.durationSeconds).max() ?? 0, 105 * 60 + 1)
-            XCTAssertLessThan(plan.weeks[0].trainingSeconds, 400 * 60)
-            XCTAssertTrue(plan.notes.contains { $0.contains("kept smaller") }, "\(plan.notes)")
+        let three = input(distance: Distance.tenK, days: [.tuesday, .thursday, .saturday], weekly: 400)
+        let p3 = try XCTUnwrap(build(three).plan)
+        XCTAssertEqual(problems(p3, three), [])
+        XCTAssertEqual(shape(p3.weeks[0]), ["q103", "e103", "L103"])
+        XCTAssertEqual(p3.weeks[0].trainingSeconds / 60, 309, accuracy: 3)
+        // Four days hold the whole 400: two easy runs at the cap beside the long run.
+        let four = input(distance: Distance.tenK, days: [.tuesday, .thursday, .friday, .sunday], weekly: 400)
+        let p4 = try XCTUnwrap(build(four).plan)
+        XCTAssertEqual(problems(p4, four), [])
+        XCTAssertEqual(shape(p4.weeks[0]), ["e105", "q85", "e105", "L105"])
+        XCTAssertEqual(p4.weeks[0].trainingSeconds / 60, 400, accuracy: 3)
+        XCTAssertFalse(p4.workouts.prefix(4).contains { $0.prescription?.purpose.contains("of 400 minutes") ?? false })
+        for p in [p3, p4] {
+            let all = p.weeks.flatMap { $0.workouts }.filter { $0.kind != .race }
+            XCTAssertLessThanOrEqual(all.map { $0.durationSeconds }.max() ?? 0, 105 * 60 + 1)
         }
     }
 
     // MARK: Sweep
+
+    private func sweepDays(_ n: Int) -> [PlanWeekday] {
+        n == 5 ? [.monday, .tuesday, .thursday, .saturday, .sunday] : Array(Self.dayPool.suffix(n))
+    }
 
     func testSweepOfHighVolumeLowDayPlans() throws {
         let distances = [Distance.fiveK, Distance.tenK, Distance.halfMarathon, Distance.marathon]
         var checked = 0
         var refused: [String] = []
         for distance in distances {
-            for n in [3, 4] {
+            for n in [3, 4, 5] {
                 for weekly in [240.0, 300, 330, 400, 450, 520] {
                     for recentLong in [nil, 70.0] as [Double?] {
                         for maxSession in [nil, 120.0] as [Double?] {
-                            let i = input(distance: distance, days: Array(Self.dayPool.suffix(n)), weekly: weekly, weeks: 10,
+                            let i = input(distance: distance, days: sweepDays(n), weekly: weekly, weeks: 10,
                                           maxSession: maxSession, recentLong: recentLong)
                             let label = "\(distance) m, \(n) days, \(weekly) min, long \(recentLong ?? 0), max \(maxSession ?? 0)"
-                            guard let plan = build(i).plan else { refused.append(label); continue }
+                            let built = build(i)
+                            guard let plan = built.plan else { refused.append("\(label) \(built.issues)"); continue }
                             checked += 1
                             XCTAssertEqual(problems(plan, i), [], label)
                         }
@@ -114,7 +141,22 @@ final class EasyRunLimitTests: XCTestCase {
                 }
             }
         }
-        XCTAssertGreaterThan(checked, 150, "refused: \(refused)")
+        XCTAssertEqual(refused, [])
+        XCTAssertEqual(checked, 288)
+    }
+
+    func testPlansBuiltOnHistoryHoldTheLimits() throws {
+        // Four weeks of 330 min over three days before the plan (fixture weeks 4 to 7).
+        let days: [PlanWeekday] = [.tuesday, .thursday, .saturday]
+        let history = (4..<8).flatMap { w in
+            [F.workout("h\(w)a", week: w, day: 1, .easy, minutes: 110), F.workout("h\(w)b", week: w, day: 3, .easy, minutes: 110),
+             F.workout("h\(w)c", week: w, day: 5, .long, minutes: 110)]
+        }
+        for distance in [Distance.tenK, Distance.halfMarathon] {
+            let i = input(distance: distance, days: days, weekly: 330, recentLong: 100)
+            let plan = try XCTUnwrap(build(i, history: history).plan, "\(distance)")
+            XCTAssertEqual(problems(plan, i, history: history), [], "\(distance)")
+        }
     }
 
     func testTwoRunningDaysAreRefusedNotPiledUp() {
@@ -174,10 +216,10 @@ final class EasyRunLimitTests: XCTestCase {
         XCTAssertEqual(GuardrailLimits().maxTrainingRunSeconds, .infinity)
         XCTAssertEqual(GuardrailLimits(maxTrainingRunSeconds: .nan).maxTrainingRunSeconds, .infinity)
         XCTAssertEqual(GuardrailLimits(maxTrainingRunSeconds: -5).maxTrainingRunSeconds, .infinity)
-        XCTAssertEqual(GuardrailLimits(maxTrainingRunSeconds: 0).maxTrainingRunSeconds, 0)
+        XCTAssertEqual(GuardrailLimits(maxTrainingRunSeconds: 0).maxTrainingRunSeconds, .infinity, "0 falls back like a negative value")
         let long = F.workout("l", week: 1, day: 5, .long, minutes: 60)
         let r = GuardrailChecker.check(history: [], planned: [long], timeZone: utc, limits: GuardrailLimits(maxTrainingRunSeconds: 0))
-        XCTAssertTrue(r.violations.filter { $0.rule == .easyRunLength }.isEmpty, "0 switches the cap off")
+        XCTAssertTrue(r.violations.filter { $0.rule == .easyRunLength }.isEmpty, "0 means the default, no cap")
     }
 
     func testMaxSessionBelowTheLongRunCapHoldsEveryRun() throws {

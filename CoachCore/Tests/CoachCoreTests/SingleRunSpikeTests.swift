@@ -381,9 +381,11 @@ final class SingleRunSpikeTests: XCTestCase {
         // Three sessions of at most 130 min (120 + 9%), one of them a quality
         // session of fixed length and a long run within its share: about 300.
         XCTAssertGreaterThanOrEqual(weeks[0], 0.7 * 400, "\(weeks)")
-        // Three days with no easy run past the long run (F3, #23) hold the
-        // peak a little under the recent 400 (about 394): at least 95% of it.
-        XCTAssertGreaterThanOrEqual(weeks.max() ?? 0, 0.95 * 400, "\(weeks)")
+        // Three days with no easy run past the long run (F3, #23) may hold the
+        // peak a little under the recent 400 (about 394), but only a plan that
+        // says so in its notes.
+        let noted = plan.notes.contains { $0.contains(PlanBuilder.easyRunLimitMarker) }
+        XCTAssertGreaterThanOrEqual(weeks.max() ?? 0, noted ? 0.95 * 400 : 400, "\(weeks), notes \(plan.notes)")
         for w in plan.weeks[0].workouts {
             XCTAssertLessThanOrEqual(w.durationSeconds, 120 * 60 * 1.1, w.id)
         }

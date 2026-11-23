@@ -101,7 +101,8 @@ public struct GuardrailLimits: Equatable, Sendable {
     /// limit, SPEC 3.5 rule 5 and F2): the plan builder sets it to the long-run
     /// time cap that applies to the race or the runner's max session length,
     /// whichever is shorter. Default `.infinity` (no cap). A race is exempt
-    /// (3.5 rule 3). A value of 0 or less switches the cap off.
+    /// (3.5 rule 3). Like the other limits, NaN, 0 or a negative value falls
+    /// back to the default (what zero limits should mean is open issue #42).
     public var maxTrainingRunSeconds: Double { didSet { maxTrainingRunSeconds = Self.valid(maxTrainingRunSeconds, \.maxTrainingRunSeconds) } }
     /// Whether each planned easy run must be at most as long as the week's
     /// long run (F3, #23: the long run is the week's longest run). Default
@@ -184,6 +185,9 @@ public struct GuardrailLimits: Equatable, Sendable {
     /// itself.
     static func valid(_ value: Double, _ field: KeyPath<GuardrailLimits, Double>) -> Double {
         if value == .infinity && (field == \.maxSingleRunIncrease || field == \.maxTrainingRunSeconds) { return value }
+        // A cap of 0 would flag every run; it falls back like a negative one
+        // (open issue #42 asks what zero limits should mean).
+        if value == 0 && field == \.maxTrainingRunSeconds { return Self.default[keyPath: field] }
         guard value.isFinite, value >= 0 else { return Self.default[keyPath: field] }
         return value
     }
@@ -895,7 +899,7 @@ public enum GuardrailChecker {
                 guard w.kind != .race, w.kind != .rest, let seconds = w.volume(.time) else { continue }
                 var allowed = Double.infinity
                 var reason = ""
-                if cap.isFinite, cap > 0, Self.exceeds(seconds, cap) {
+                if cap.isFinite, Self.exceeds(seconds, cap) {
                     allowed = cap
                     reason = "is longer than the \(PlanFormatting.volume(cap, .time)) a training run may be (the long-run cap for this race or your max session length)"
                 }

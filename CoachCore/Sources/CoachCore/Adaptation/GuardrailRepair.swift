@@ -261,6 +261,7 @@ enum GuardrailRepair {
                 out.remove(at: i)
                 c = Cut(plan: out, shortened: [], dropped: [id], remaining: 0)
             }
+            // No metric names an easy run against the long run, so the closest, the long-run duration, is cited.
             let t = TriggerMetric(metric: .longRunDuration, value: v.measured, expectedHigh: v.allowed, unit: .seconds,
                                   sourceID: id, detail: v.explanation)
             return (c.plan, changes(c, week: week, trigger: t, rule: "SPEC F3 and 3.5 rule 5 (heuristic guardrail), F4, F9",

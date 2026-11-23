@@ -1020,13 +1020,20 @@ extension PlanBuilder {
         }
     }
 
-    /// Marks the note a week carries when it is kept smaller so no easy run
-    /// is longer than the long run (F3, #23).
-    static let easyRunLimitMarker = "is kept smaller than asked so that no easy run is longer than the long run"
+    /// Marks a week the easy-run limit (F3, #23) held below its volume. The
+    /// builder first writes `easyLimitToken` on the week's first session and
+    /// `Builder.run` replaces it with `easyRunLimitNote`, which can state the
+    /// week against the volume it was asked for, or removes it when the week
+    /// kept its volume.
+    static let easyLimitToken = "{easy-limit}"
+    /// The words every such note holds.
+    static let easyRunLimitMarker = "so that no easy run is longer than the long run"
 
-    static func easyRunLimitNote(seconds: Double, days: Int) -> String {
-        "This week \(easyRunLimitMarker) (or past the long-run cap or your max session length) on \(days) running days: "
-            + "\(Int(seconds / 60)) min of easy running was left out, and the harder running is kept in proportion (SPEC 3.1, F3)."
+    /// Plain wording, no easy run longer than the long run (F3, #23): the
+    /// week as planned against the volume the plan was aiming for.
+    static func easyRunLimitNote(planned: Double, asked: Double, days: Int) -> String {
+        "This week is \(Int(planned / 60)) of \(Int(asked / 60)) minutes \(easyRunLimitMarker) (or past the long-run cap or "
+            + "your max session length) on \(days) running days; its easy share still stays within 75 to 85% (SPEC 3.1, F3)."
     }
 
     /// The note a week carries for `seconds` of easy time it leaves out, with
@@ -1380,6 +1387,15 @@ private struct Builder {
     /// many quality sessions) is used. No quality session is ever shortened
     /// for the chain.
     ///
+    /// No easy run may be longer than the week's long run (F3, #23), so a
+    /// reshape that needs one to carry the chain fails. Then, in this order
+    /// (all heuristics, SPEC sets neither): the quality session takes the
+    /// opening easy run's day (`swappedOpener`: nothing before it, so no chain
+    /// limit on it, and the easy runs after it grow toward it without passing
+    /// the long run); else the week is drafted again 1.5% smaller at a time,
+    /// up to 40 steps, until a reshape holds (the week's note then says it is
+    /// shorter than the volume aimed for).
+    ///
     /// This is a heuristic: SPEC 3.5 says nothing of a runner with no
     /// recorded past, and only such a week is shaped this way (later weeks
     /// have the plan's own runs as their reference). If no reshape meets the
@@ -1400,13 +1416,18 @@ private struct Builder {
                 best = shaped
             }
         }
-        // The quality session first, in the opening easy run's place: with
-        // nothing before it the spike chain holds no limit on it, and the easy
-        // runs after it then grow toward it without passing the long run.
+        // Heuristic: the quality session first, in the opening easy run's
+        // place (see the doc comment). It keeps the two-day spacing of quality
+        // sessions that `pickQualityDays` aims for: the opener's day must not
+        // be next to another quality day. (The long run's day is not a hard
+        // constraint in `pickQualityDays`, only a distance it maximises, so it
+        // isn't one here.)
         func swappedOpener(_ d: [SessionDraft]) -> [SessionDraft]? {
             let byDay = d.sorted { $0.day < $1.day }
             guard let first = byDay.first, first.kind == .easy,
-                  let q = byDay.first(where: { $0.kind.isQuality }), !ctx.excludedQualityDays.contains(first.day) else { return nil }
+                  let q = byDay.first(where: { $0.kind.isQuality }), !ctx.excludedQualityDays.contains(first.day),
+                  byDay.filter({ $0.kind.isQuality && $0.day != q.day })
+                      .allSatisfy({ PlanBuilder.circularDistance($0.day, first.day) >= 2 }) else { return nil }
             return byDay.map { x in
                 if x.day == first.day { return SessionDraft(day: first.day, kind: q.kind, segments: q.segments, purpose: q.purpose, rules: q.rules) }
                 if x.day == q.day { return SessionDraft(day: q.day, kind: first.kind, segments: first.segments, purpose: first.purpose, rules: first.rules) }
@@ -1428,8 +1449,7 @@ private struct Builder {
             guard size >= ctx.floor else { break }
             let smaller = composeWeek(target: size, ctx: ctx)
             if let shaped = reshapeChain(smaller, ctx: ctx, references: spike.references, factor: factor) {
-                let cut = PlanBuilder.floorMinute(full - total(shaped))
-                return cut >= 60 ? Self.noteEasyRunLimit(shaped, seconds: cut, days: ctx.days.count) : shaped
+                return PlanBuilder.floorMinute(full - total(shaped)) >= 60 ? Self.tagEasyRunLimit(shaped) : shaped
             }
         }
         return drafts
@@ -1803,6 +1823,7 @@ private struct Builder {
                        shortEasy(drafts) || total(retry) > total(drafts) + 60 { drafts = retry; spikeBound = retryBound }
                 }
             }
+            drafts = Self.wordEasyRunLimit(drafts, asked: desired, days: weekDays.count)
             let training: Double = drafts.reduce(0.0) { $0 + $1.duration }
             let hard: Double = drafts.reduce(0.0) { $0 + $1.hardSeconds }
             guard training > 0 else {
@@ -1881,11 +1902,7 @@ private struct Builder {
         let planned = weeks.flatMap(\.workouts)
         // The plan's own easy-run limits (F3, #23) are checked with the rest.
         var checkLimits = limits
-        if !(limits.maxTrainingRunSeconds > 0) || limits.maxTrainingRunSeconds.isFinite == false {
-            checkLimits.maxTrainingRunSeconds = maxSession
-        } else {
-            checkLimits.maxTrainingRunSeconds = min(limits.maxTrainingRunSeconds, maxSession)
-        }
+        checkLimits.maxTrainingRunSeconds = min(limits.maxTrainingRunSeconds, maxSession)
         checkLimits.easyRunsWithinLongRun = true
         let report = GuardrailChecker.check(history: history, planned: planned, timeZone: timeZone, limits: checkLimits)
         guard report.passed else { return .cannotBuild([.failsGuardrails(report)]) }
@@ -1907,7 +1924,7 @@ private struct Builder {
         }
         if !keptSmaller.isEmpty {
             let list = keptSmaller.map(String.init).joined(separator: ", ")
-            notes.append("Week \(list) \(keptSmaller.count == 1 ? "is" : "are") kept smaller than your recent volume would give, so that no easy run is longer than the week's long run (or past the long-run cap or your max session length) on your running days. Add a running day to fit more (SPEC F3).")
+            notes.append("Week\(keptSmaller.count == 1 ? "" : "s") \(list) \(keptSmaller.count == 1 ? "is" : "are") planned shorter than the volume the plan was aiming for, \(PlanBuilder.easyRunLimitMarker) (or past the long-run cap or your max session length) on your running days. Adding a running day would fit more (SPEC F3).")
         }
         var rebuildDate: Date?
         if startWeekOpen {
@@ -2334,8 +2351,9 @@ private struct Builder {
         if easyTotal > 60 && easyTotal < H.minimumEasyRunSeconds, q > 0 {
             let extra = PlanBuilder.floorMinute(min(easyTotal, maxSession - quality[0].duration))
             if extra > 0 {
+                coolDowns[0] += extra
                 drafts[0] = qualitySession(day: qDays[0], kind: ctx.qualityKinds[0], main: mains[0], ctx: ctx,
-                                           warmUp: warmUps[0], coolDown: coolDowns[0] + extra)
+                                           warmUp: warmUps[0], coolDown: coolDowns[0])
                 easyTotal -= extra
             }
         }
@@ -2359,18 +2377,35 @@ private struct Builder {
             if each >= H.minimumEasyRunSeconds {
                 drafts += days.map { easySession(day: $0, seconds: each, ctx: ctx) }
                 // Easy time the limit above holds back is not piled on one
-                // run; it goes to the long run if that has room, else the week
-                // is kept smaller (below).
+                // run: the quality sessions' cool-down takes it, then the week
+                // is planned smaller (below).
                 easyTotal = easyTotal / Double(count) > easyCap ? easyTotal - each * Double(count) : 0
                 if easyTotal > 0 { cutByLimit = easyTotal }
+            }
+        }
+        // Time the easy-run limit holds back goes, after other easy runs and free
+        // days (the count loop above), to the quality sessions' easy cool-down,
+        // so the hard minutes stay as planned: each quality session may grow up
+        // to the week's long run, the long-run cap and the max session length
+        // (`easyCap`). Only what still doesn't fit shrinks the week. A
+        // heuristic ordering: SPEC F3 says only that the week plans smaller
+        // when its volume doesn't fit (F3, #23). It never goes to the long
+        // run, which would only raise the limit it was held to.
+        let heldBack = cutByLimit
+        if cutByLimit >= 60 {
+            for j in 0..<q where cutByLimit >= 60 {
+                let room = PlanBuilder.floorMinute(min(cutByLimit, easyCap - drafts[j].duration))
+                guard room >= 60 else { continue }
+                coolDowns[j] += room
+                drafts[j] = qualitySession(day: qDays[j], kind: ctx.qualityKinds[j], main: mains[j], ctx: ctx,
+                                           warmUp: warmUps[j], coolDown: coolDowns[j])
+                cutByLimit -= room
             }
         }
         // Easy time left with no run of its own lengthens the long run within
         // its limits (share, spike allowance, F3 step, session cap); what
         // still doesn't fit is left out, and the week says so (#79).
-        // (Time the easy-run limit held back is not given to the long run: that
-        // would only raise the limit it was held to, F3, #23.)
-        easyTotal -= cutByLimit
+        easyTotal -= heldBack
         if easyTotal >= 60, let li = drafts.firstIndex(where: { $0.kind == .long }) {
             let rest = drafts.reduce(0) { $0 + $1.duration } - drafts[li].duration
             let limit = min(longRunFit(rest: rest), ctx.longRaiseCap, maxSession, longRunCap)
@@ -2419,18 +2454,33 @@ private struct Builder {
         }
         drafts.sort { $0.day < $1.day }
         if skippedLong, let day = ctx.longDay { drafts = Self.noteSkippedLongRun(drafts, longDay: day) }
-        if limitOut >= 60 { drafts = Self.noteEasyRunLimit(drafts, seconds: limitOut, days: ctx.days.count) }
+        if limitOut >= 60 || heldBack >= 60 { drafts = Self.tagEasyRunLimit(drafts) }
         if leftOut > 0 { drafts = Self.noteLeftOut(drafts, seconds: leftOut, freeDay: !free.isEmpty) }
         return drafts
     }
 
-    /// Says on the week's first session that the week was kept smaller so no
-    /// easy run is longer than the long run (F3, #23).
-    static func noteEasyRunLimit(_ drafts: [SessionDraft], seconds: Double, days: Int) -> [SessionDraft] {
-        guard let d = drafts.first else { return drafts }
+    /// Tags the week's first session as held below its volume by the
+    /// easy-run limit (F3, #23); `Builder.run` words the note.
+    static func tagEasyRunLimit(_ drafts: [SessionDraft]) -> [SessionDraft] {
+        guard let d = drafts.first, !d.purpose.contains(PlanBuilder.easyLimitToken) else { return drafts }
         var out = drafts
-        let note = PlanBuilder.easyRunLimitNote(seconds: seconds, days: days)
-        out[0] = SessionDraft(day: d.day, kind: d.kind, segments: d.segments, purpose: d.purpose + " " + note, rules: d.rules)
+        out[0] = SessionDraft(day: d.day, kind: d.kind, segments: d.segments, purpose: d.purpose + " " + PlanBuilder.easyLimitToken,
+                              rules: d.rules)
+        return out
+    }
+
+    /// Replaces the token with the note stating the week against `asked`, or
+    /// removes it when the week is within a minute of it (F3, #23).
+    static func wordEasyRunLimit(_ drafts: [SessionDraft], asked: Double, days: Int) -> [SessionDraft] {
+        guard let k = drafts.firstIndex(where: { $0.purpose.contains(PlanBuilder.easyLimitToken) }) else { return drafts }
+        let planned = drafts.reduce(0) { $0 + $1.duration }
+        let d = drafts[k]
+        let text = planned < asked - 60
+            ? PlanBuilder.easyRunLimitNote(planned: planned, asked: asked, days: days) : ""
+        var out = drafts
+        out[k] = SessionDraft(day: d.day, kind: d.kind, segments: d.segments,
+                              purpose: d.purpose.replacingOccurrences(of: " " + PlanBuilder.easyLimitToken, with: text.isEmpty ? "" : " " + text),
+                              rules: d.rules)
         return out
     }
 

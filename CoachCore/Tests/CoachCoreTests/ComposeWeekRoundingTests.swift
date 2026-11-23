@@ -116,9 +116,12 @@ final class ComposeWeekRoundingTests: XCTestCase {
                             // With the rule on, a week it binds may be smaller
                             // (SingleRunSpikeTests.compareWithRuleOff checks those).
                             for (week, before) in off.plan.map(recoveryWeeks) ?? [] {
-                                // A week kept smaller so no easy run is longer than
-                                // the long run (F3, #23) says so and is exempt.
+                                // A week the easy-run limit (F3, #23) holds down says so
+                                // in its note; it is held to a looser bound (at least 55% of
+                                // the week before, still a recovery week and in the 3.1 band).
                                 if week.workouts.contains(where: { $0.prescription?.purpose.contains(PlanBuilder.easyRunLimitMarker) ?? false }) {
+                                    XCTAssertGreaterThanOrEqual(minutes(week), 0.55 * minutes(before), "\(label) noted week \(week.index)")
+                                    XCTAssertTrue((0.75...0.85).contains(week.easyShare ?? 0), "\(label) noted week \(week.index)")
                                     continue
                                 }
                                 XCTAssertGreaterThanOrEqual(minutes(week), 0.95 * PlanHeuristics.recoveryWeekRatio * minutes(before),
