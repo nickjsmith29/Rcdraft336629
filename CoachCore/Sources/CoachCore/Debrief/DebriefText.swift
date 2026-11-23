@@ -161,7 +161,8 @@ public enum DebriefText {
                     case .above: stated = state(f, .pace, [(.greaterThan, .targetSlowest)], d, u)
                     case .withinTolerance:
                         // Outside the range by no more than the classifier's tolerance:
-                        // state the end it passed, and that the coach counts it as on target.
+                        // state the end it passed, and that it is close enough to count as on pace
+                        // (a statement about pace only, not the coach's overall reading of the run).
                         stated = pace.value > slow.value ? state(f, .pace, [(.greaterThan, .targetSlowest)], d, u)
                             : state(f, .pace, [(.lessThan, .targetFastest)], d, u)
                     }
@@ -173,7 +174,7 @@ public enum DebriefText {
                     case .within: s += ", \(j)inside \(target)"
                     case .withinTolerance:
                         let side = pace.value > slow.value ? "slower" : "faster"
-                        s += ", \(j)\(side) than \(target), but close enough for the coach to count as on target"
+                        s += ", \(j)\(side) than \(target), but close enough to count as on pace"
                     case .below: s += ", \(j)faster than \(target)"
                     case .above: s += ", \(j)slower than \(target)"
                     }
