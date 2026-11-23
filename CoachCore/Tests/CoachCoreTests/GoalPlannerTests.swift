@@ -321,4 +321,80 @@ final class GoalPlannerTests: XCTestCase {
         XCTAssertTrue(replan.droppedThisWeek.contains { !edited.schedule.trainingDays.contains(PlanWeekday(of: $0.date, timeZone: tz)) })
         XCTAssertTrue(replan.explanation.contains { $0.hasSuffix("fell on days you no longer train, so they were dropped.") })
     }
+
+    // MARK: Every session of the current week is kept or dropped (#15)
+
+    /// A plan built on the Monday two weeks before the fixture's last
+    /// Wednesday, with the race `weeksAhead` weeks after this week's Sunday.
+    func oldPlan(_ settings: GoalSettings, weeksBefore: Int = 2) throws -> TrainingPlan {
+        let monday = BaselineFixture.date(day: (BaselineFixture.weeks - weeksBefore) * 7, hour: 6)
+        let r = GoalPlanner.plan(settings: settings, baseline: GoalFixture.fixtureReport(asOf: monday), today: monday)
+        return try XCTUnwrap(r.plan, "old plan: \(r.issues)").plan
+    }
+
+    func testOldRaceInTheCurrentWeekIsDropped() throws {
+        let original = GoalFixture.settings(distance: Distance.fiveK, weeksAhead: 0)
+        let old = try oldPlan(original, weeksBefore: 4)
+        let race = try XCTUnwrap(old.workouts.first { $0.kind == .race })
+        XCTAssertGreaterThan(race.date, today)
+        var edited = original
+        edited.race.date = GoalFixture.raceDay(weeksAhead: 12)
+        let replan = GoalPlanner.replan(from: original, previousPlan: old, to: edited, baseline: report, today: today)
+        let p = try XCTUnwrap(replan.result.plan, "\(replan.result.issues)")
+        let firstWeek = try XCTUnwrap(p.plan.weeks.first).weekStart
+        XCTAssertTrue(replan.droppedThisWeek.contains(race))
+        XCTAssertFalse(replan.keptThisWeek.contains(race))
+        // Together the two lists cover everything the old plan had left this week.
+        let rest = old.workouts.filter { $0.date >= today && $0.date < firstWeek }
+        XCTAssertEqual(Set(replan.keptThisWeek + replan.droppedThisWeek), Set(rest))
+        XCTAssertTrue(replan.explanation.contains { $0.contains("race in the previous plan") })
+    }
+
+    func testUndoneSessionFromEarlierTodayIsDropped() throws {
+        var days = GoalFixture.fixtureDays
+        days.insert(.wednesday)
+        let original = GoalFixture.settings(weeksAhead: 14, days: days)
+        let old = try oldPlan(original)
+        // The old plan's sessions are at noon; the re-plan comes that evening.
+        let evening = BaselineFixture.date(day: BaselineFixture.weeks * 7 + 2, hour: 18)
+        let report = GoalFixture.fixtureReport(asOf: evening)
+        let earlier = old.workouts.filter { $0.date >= BaselineFixture.date(day: BaselineFixture.weeks * 7 + 2, hour: 0) && $0.date < evening }
+        XCTAssertFalse(earlier.isEmpty, "the old plan had a session this morning: \(old.workouts.map(\.date))")
+        var edited = original
+        edited.race.time = .seconds(6900)
+        let replan = GoalPlanner.replan(from: original, previousPlan: old, to: edited, baseline: report, today: evening)
+        XCTAssertNotNil(replan.result.plan)
+        for s in earlier { XCTAssertTrue(replan.droppedThisWeek.contains(s)) }
+        XCTAssertTrue(replan.keptThisWeek.allSatisfy { $0.date >= evening })
+        XCTAssertTrue(replan.explanation.contains { $0.contains("from earlier today") })
+
+        // A run logged today means the session was done: it is neither kept nor dropped.
+        let done = GoalFixture.fixtureReport(asOf: evening, change: { acts in
+            acts.append(BaselineFixture.run("done-today", start: BaselineFixture.date(day: BaselineFixture.weeks * 7 + 2, hour: 7),
+                                            seconds: 1800, speed: BaselineFixture.easySpeed,
+                                            hr: { _ in BaselineFixture.hr(atSpeed: BaselineFixture.easySpeed) },
+                                            cadence: 170, outdoor: true))
+        })
+        let after = GoalPlanner.replan(from: original, previousPlan: old, to: edited, baseline: done, today: evening)
+        for s in earlier {
+            XCTAssertFalse(after.droppedThisWeek.contains(s))
+            XCTAssertFalse(after.keptThisWeek.contains(s))
+        }
+    }
+
+    func testKeptEqualsTheRemainingSessionsWhenTheyFit() throws {
+        let original = GoalFixture.settings(weeksAhead: 14)
+        let old = try oldPlan(original)
+        // Same goal: the rest of the week stays as planned.
+        let replan = GoalPlanner.replan(from: original, previousPlan: old, to: original, baseline: report, today: today)
+        let p = try XCTUnwrap(replan.result.plan, "\(replan.result.issues)")
+        let firstWeek = try XCTUnwrap(p.plan.weeks.first).weekStart
+        let rest = old.workouts.filter { $0.date >= today && $0.date < firstWeek }
+        XCTAssertFalse(rest.isEmpty)
+        if replan.droppedThisWeek.isEmpty {
+            XCTAssertEqual(replan.keptThisWeek, rest.sorted { $0.date < $1.date })
+        } else {
+            XCTAssertEqual(Set(replan.keptThisWeek + replan.droppedThisWeek), Set(rest))
+        }
+    }
 }
