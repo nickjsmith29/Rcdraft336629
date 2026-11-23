@@ -31,12 +31,39 @@ public enum PredictionMethod: String, CaseIterable, Sendable {
     case vickersVertosick
 }
 
-/// One method's estimate, with the efforts it used so the app can show its evidence.
+/// The numbers a method used besides its efforts, so each estimate shows its
+/// inputs (SPEC.md 3.9, F13). A field is nil when the method doesn't use it.
+public struct MethodInputs: Equatable, Sendable {
+    /// The runner's pace at LTHR in seconds per meter (threshold method).
+    public let secondsPerMeterAtLTHR: Double?
+    /// Typical weekly running volume in meters (Vickers-Vertosick).
+    public let weeklyMeters: Double?
+    /// Fitted critical speed in meters per second (critical-speed method).
+    public let criticalSpeedMetersPerSecond: Double?
+    /// Fitted D′ in meters (critical-speed method).
+    public let dPrimeMeters: Double?
+    /// The Riegel exponent applied (Riegel, threshold and Vickers-Vertosick).
+    public let riegelExponent: Double?
+
+    public init(secondsPerMeterAtLTHR: Double? = nil, weeklyMeters: Double? = nil,
+                criticalSpeedMetersPerSecond: Double? = nil, dPrimeMeters: Double? = nil,
+                riegelExponent: Double? = nil) {
+        self.secondsPerMeterAtLTHR = secondsPerMeterAtLTHR
+        self.weeklyMeters = weeklyMeters
+        self.criticalSpeedMetersPerSecond = criticalSpeedMetersPerSecond
+        self.dPrimeMeters = dPrimeMeters
+        self.riegelExponent = riegelExponent
+    }
+}
+
+/// One method's estimate, with the efforts and inputs it used so the app can show its evidence.
 public struct MethodEstimate: Equatable, Sendable {
     public let method: PredictionMethod
     public let seconds: Double
     /// Efforts the estimate came from (empty for the threshold method, which uses pace at LTHR).
     public let evidence: [BestEffort]
+    /// The other numbers the method used (pace at LTHR, weekly meters, fitted CS and D′, exponent).
+    public let inputs: MethodInputs
 }
 
 /// Why a method did not contribute.
@@ -110,9 +137,11 @@ public struct CriticalSpeedFit: Equatable, Sendable {
 ///   distances whose durations differ by 1.5x or more, and predicts only targets
 ///   it would run in 60 minutes or less: beyond about an hour the model's
 ///   asymptote at CS flatters the runner.
-/// - Threshold treats the runner's pace at LTHR as 1-hour race pace (LTHR is
-///   about the average HR of an all-out 1-hour effort, SPEC.md 3.2), then
+/// - Threshold treats the runner's pace at LTHR as 1-hour race pace, then
 ///   applies Riegel from that 1-hour equivalent. Targets up to the half marathon.
+///   Mapping LTHR to an all-out 1-hour pace is a heuristic: SPEC.md 3.2 defines
+///   LTHR but does not say it is the 1-hour race pace.
+/// - Targets shorter than `minimumTargetMeters` (1 mile, a heuristic) are not predicted.
 /// - The range runs from the fastest to the slowest method estimate around their
 ///   median, and is at least `minimumSpreadFraction` either side of it.
 public enum BlendedPredictor {
@@ -128,6 +157,10 @@ public enum BlendedPredictor {
     public static let minimumSpreadFraction = 0.02
     /// A target within 0.5% of 42.195 km counts as a marathon.
     public static let marathonTolerance = 0.005
+    /// Shortest target predicted: 1 mile. A heuristic, not from the spec: Riegel and
+    /// critical speed from 3 km+ efforts are extrapolated too far for 400 m or 800 m,
+    /// where anaerobic capacity, not endurance, sets the time.
+    public static let minimumTargetMeters = Distance.mile
     /// Targets up to the half marathon (plus 1% for course measurement) are "short".
     public static let shortTargetLimit = Distance.halfMarathon * 1.01
 
@@ -158,7 +191,7 @@ public enum BlendedPredictor {
         let validTarget = targetMeters.isFinite && targetMeters > 0
         let isMarathon = validTarget
             && abs(targetMeters - Distance.marathon) / Distance.marathon <= marathonTolerance
-        let isShort = validTarget && targetMeters <= shortTargetLimit
+        let isShort = validTarget && targetMeters >= minimumTargetMeters && targetMeters <= shortTargetLimit
 
         if isMarathon {
             for method in [PredictionMethod.riegel, .criticalSpeed, .threshold] {
@@ -226,7 +259,8 @@ public enum BlendedPredictor {
                                            targetMeters: target, exponent: riegelExponent) else {
             return .failure(.noQualifyingEfforts)
         }
-        return .success(MethodEstimate(method: .riegel, seconds: t, evidence: [effort]))
+        return .success(MethodEstimate(method: .riegel, seconds: t, evidence: [effort],
+                                     inputs: MethodInputs(riegelExponent: riegelExponent)))
     }
 
     static func criticalSpeed(target: Double, efforts: [BestEffort]) -> Result<MethodEstimate, SkipReason> {
@@ -237,7 +271,9 @@ public enum BlendedPredictor {
             guard let t = fit.predictedSeconds(meters: target), t <= criticalSpeedMaximumPredictionSeconds else {
                 return .failure(.targetOutOfRange)
             }
-            return .success(MethodEstimate(method: .criticalSpeed, seconds: t, evidence: fit.evidence))
+            return .success(MethodEstimate(method: .criticalSpeed, seconds: t, evidence: fit.evidence,
+                                             inputs: MethodInputs(criticalSpeedMetersPerSecond: fit.metersPerSecond,
+                                                                  dPrimeMeters: fit.dPrimeMeters)))
         }
     }
 
@@ -250,7 +286,8 @@ public enum BlendedPredictor {
                                            targetMeters: target, exponent: riegelExponent) else {
             return .failure(.missingInput)
         }
-        return .success(MethodEstimate(method: .threshold, seconds: t, evidence: []))
+        return .success(MethodEstimate(method: .threshold, seconds: t, evidence: [],
+                                     inputs: MethodInputs(secondsPerMeterAtLTHR: spm, riegelExponent: riegelExponent)))
     }
 
     static func vickersVertosick(efforts: [BestEffort], typicalWeeklyMeters: Double?) -> Result<MethodEstimate, SkipReason> {
@@ -267,7 +304,8 @@ public enum BlendedPredictor {
                                                        weeklyMiles: weekly / Distance.mile) else {
             return .failure(.noQualifyingEfforts)
         }
-        return .success(MethodEstimate(method: .vickersVertosick, seconds: t, evidence: [race]))
+        return .success(MethodEstimate(method: .vickersVertosick, seconds: t, evidence: [race],
+                                     inputs: MethodInputs(weeklyMeters: weekly, riegelExponent: 1.07)))
     }
 
     // MARK: - Helpers
@@ -318,6 +356,14 @@ public enum BlendedPredictor {
 /// form, with no course-difficulty offset. The coefficients come from the paper's
 /// supplementary formulae as reproduced in a systematic review of marathon prediction
 /// equations; see the PR for what was and wasn't checked against the original.
+///
+/// **Unverified constants:** the four coefficients (intercept, Riegel-speed and
+/// weekly-mileage terms, and the 1.07 Riegel exponent) and the 227.6 min² validation
+/// MSE are all unverified against the paper's Additional file 1. Someone with access
+/// should check all five against the original file.
+///
+/// The predictor feeds this the longest best effort in range, which may be a training
+/// split or a hard session rather than a race; the UI should say "longest recent effort".
 ///
 /// For most runners the corrected time is slower than plain Riegel. At high weekly volume
 /// for the runner's speed it can come out faster (the regression gives mileage its own
