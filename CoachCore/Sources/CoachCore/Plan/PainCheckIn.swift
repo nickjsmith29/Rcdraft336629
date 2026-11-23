@@ -120,7 +120,9 @@ public enum PainCheckInOutcome: Equatable, Sendable {
 /// (the adaptation engine, F4) passes the date of the latest check-in whose
 /// response it has already applied; a check-in at or before that date gives
 /// `.noAction`, so one high score never swaps a second quality session. The
-/// caller keeps enforcing the stored freeze itself until `freezeEnd`.
+/// caller keeps enforcing the stored freeze itself until `freezeEnd`. The
+/// caller must evaluate on every new check-in, because only the latest is
+/// looked at. Check-ins at the same instant count as one, with the highest score.
 public enum PainCheckInRule {
     /// - Parameters:
     ///   - tracksPain: the explicit flag from the goal interview (F2). False
@@ -145,11 +147,16 @@ public enum PainCheckInRule {
                                 timeZone: TimeZone,
                                 limits: PainRuleLimits = .default) -> PainCheckInOutcome {
         guard tracksPain else { return .notTracked }
-        let valid = checkIns
-            .filter { PainCheckIn.validScores.contains($0.score) && $0.date <= asOf }
-            .enumerated()
-            .sorted { $0.element.date != $1.element.date ? $0.element.date < $1.element.date : $0.offset < $1.offset }
-            .map(\.element)
+        // Check-ins at the same instant are one report: keep the highest score
+        // (the cautious choice), whatever the input order, the same collapse the
+        // adaptation engine applies. So a 2 and a 6 at one time read as 6, and
+        // never as a rise from the 2.
+        var valid: [PainCheckIn] = []
+        for c in checkIns
+            .filter({ PainCheckIn.validScores.contains($0.score) && $0.date <= asOf })
+            .sorted(by: { $0.date != $1.date ? $0.date < $1.date : $0.score < $1.score }) {
+            if let last = valid.last, last.date == c.date { valid[valid.count - 1] = c } else { valid.append(c) }
+        }
         guard let latest = valid.last else { return .noCheckIns }
         if let applied = lastAppliedCheckIn, latest.date <= applied { return .noAction }
 

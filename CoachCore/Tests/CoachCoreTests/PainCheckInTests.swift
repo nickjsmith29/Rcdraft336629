@@ -182,4 +182,20 @@ final class PainCheckInTests: XCTestCase {
         XCTAssertEqual(evaluate([checkIn(day: 3, 2), checkIn(day: 5, 8)], asOf: at(day: 4)), .noAction)
         XCTAssertEqual(evaluate([checkIn(day: 5, 8)], asOf: at(day: 4)), .noCheckIns)
     }
+
+    func testSameTimestampHigherScoreCountsAsLatestInEitherOrder() throws {
+        let low = checkIn(day: 3, 2), high = checkIn(day: 3, 6)
+        let a = try response(evaluate([low, high]))
+        let b = try response(evaluate([high, low]))
+        XCTAssertEqual(a, b)
+        XCTAssertEqual(a.checkIn.score, 6)
+        // One report, so the 2 is not a "previous" check-in to rise from.
+        XCTAssertEqual(a.triggers, [.scoreAtOrAbove(threshold: 4)])
+    }
+
+    func testSameTimestampTieDoesNotHideEarlierComparison() throws {
+        let r = try response(evaluate([checkIn(day: 1, 1), checkIn(day: 3, 6), checkIn(day: 3, 2)]))
+        XCTAssertEqual(r.checkIn.score, 6)
+        XCTAssertEqual(r.triggers, [.scoreAtOrAbove(threshold: 4), .rise(previous: 1, rise: 5)])
+    }
 }
