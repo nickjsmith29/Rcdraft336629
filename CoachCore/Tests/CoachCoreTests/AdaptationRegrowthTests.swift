@@ -76,12 +76,16 @@ final class AdaptationRegrowthTests: XCTestCase {
         assertSound(d.outcomes, missedWeek: 11)
         assertNeverAbovePlan(d, original, weeks: 8...17)
         let pre = (7...10).map { volume($0, history + d.history) }.reduce(0, +) / 4
-        let w12 = volume(12, d.history), w13 = volume(13, d.history)
+        // The easy-run cap (#54) drops the time it cuts from a week, so a capped week is read
+        // with that time added back: the ramp's floor is on the week before the cap.
+        func cut(_ w: Int) -> Double { d.state.preCap.week(weekStart(w))?.secondsCut ?? 0 }
+        let w12 = volume(12, d.history) + cut(12), w13 = volume(13, d.history) + cut(13)
         let minute = 60.0
         // Ramp week 1: the lower of 70% of the pre-break level and of the original week.
         XCTAssertGreaterThanOrEqual(w12, 0.9 * min(0.7 * pre, 0.7 * volume(12, original)), "\(ran)")
-        // Ramp week 2: also at most 90/70 of week 1.
-        XCTAssertGreaterThanOrEqual(w13, 0.9 * min(0.9 * pre, 0.9 / 0.7 * w12, 0.9 * volume(13, original)), "\(ran)")
+        // Ramp week 2: also at most 90/70 of week 1, read at its own time (rules 4 and 6 do not
+        // read a capped week at its time before the cap).
+        XCTAssertGreaterThanOrEqual(w13, 0.9 * min(0.9 * pre, 0.9 / 0.7 * volume(12, d.history), 0.9 * volume(13, original)), "\(ran)")
         XCTAssertGreaterThanOrEqual(volume(14, d.history), 0.8 * w13 - 5 * minute, "a recovery week at the least, \(ran)")
         XCTAssertGreaterThanOrEqual(volume(15, d.history), 1.1 * w13 - 5 * minute, "\(ran)")
         XCTAssertTrue(d.outcomes.contains { !$0.regrowth.weeks.isEmpty })
@@ -633,7 +637,7 @@ final class AdaptationRegrowthTests: XCTestCase {
     func testTheSnapshotIsStoredAndAVersion3StateDecodesWithoutOne() throws {
         let o = AdaptationEngine.processDay(asOf: F.date(week: 0, day: 2, hour: 6), state: AdaptationState(), plan: F.weeks(0..<3),
                                             history: [], context: F.context())
-        XCTAssertEqual(AdaptationState.formatVersion, 4)
+        XCTAssertEqual(AdaptationState.formatVersion, 5)
         let data = try JSONEncoder().encode(o.state)
         let back = try JSONDecoder().decode(AdaptationState.self, from: data)
         XCTAssertEqual(back.planSnapshot, o.state.planSnapshot)

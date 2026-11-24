@@ -154,6 +154,12 @@ public struct AdaptationState: Equatable, Sendable {
     /// The plan as the app last handed it in, before the engine cut it, for
     /// the regrowth after a missed, cut or painful week (3.5 rule 6, #64).
     public var planSnapshot: PlanSnapshot
+    /// The weeks whose easy runs were capped at a cut long run, each with its
+    /// time before the cap (SPEC 3.5 rule 5, #54). Kept for good, so the
+    /// share check and the later weeks' 10% and rolling checks keep reading
+    /// the week at that time once it is history. Pass the outcome's
+    /// `regrowth`, which carries it, to `GuardrailChecker.check(regrowth:)`.
+    public var preCap: GuardrailPreCap
 
     public init(assessments: [RunAssessment] = [], qualitySignals: [SignalRecord] = [],
                 easyHeartRates: [EasyHeartRateRecord] = [], longRuns: [LongRunRecord] = [],
@@ -162,7 +168,7 @@ public struct AdaptationState: Equatable, Sendable {
                 qualityPaceFactor: Double = 1, easyPaceFactor: Double = 1,
                 reportedHoldShortfalls: [PlanChange] = [], painReports: [PainReport] = [],
                 painStop: PainStop? = nil, painRecovery: PainRecovery = PainRecovery(),
-                planSnapshot: PlanSnapshot = PlanSnapshot()) {
+                planSnapshot: PlanSnapshot = PlanSnapshot(), preCap: GuardrailPreCap = .none) {
         self.assessments = assessments
         self.qualitySignals = qualitySignals
         self.easyHeartRates = easyHeartRates
@@ -179,6 +185,7 @@ public struct AdaptationState: Equatable, Sendable {
         self.painStop = painStop
         self.painRecovery = painRecovery
         self.planSnapshot = planSnapshot
+        self.preCap = preCap
     }
 
     /// Freezes in force at or after `date` (those that have not ended).

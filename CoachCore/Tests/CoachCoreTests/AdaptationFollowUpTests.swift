@@ -543,7 +543,10 @@ final class AdaptationFollowUpTests: XCTestCase {
         XCTAssertEqual(swaps.filter { !rule6($0) }.count, 1, "\(swaps.map(\.rule))")
         for o in d.outcomes {
             for q in o.plan where q.kind.isQuality {
-                XCTAssertEqual(q.durationSeconds, original.first { $0.id == q.id }?.durationSeconds, q.id)
+                // Only a session's easy extension may be cut (#54: easy running within the long run).
+                let was = try XCTUnwrap(original.first { $0.id == q.id })
+                XCTAssertLessThanOrEqual(q.durationSeconds, was.durationSeconds, q.id)
+                XCTAssertGreaterThanOrEqual(q.durationSeconds, was.durationSeconds - was.easyExtensionSeconds, q.id)
             }
         }
     }
