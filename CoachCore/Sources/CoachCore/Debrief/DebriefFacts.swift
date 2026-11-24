@@ -11,7 +11,8 @@
 /// `AdaptationOutcome` for what changes in the plan (F4).
 ///
 /// A fact that can't be computed is left out, never guessed: no heart rate,
-/// no cadence, a treadmill or hilly run (pace not compared), a run too short
+/// no cadence, a treadmill run, or a hilly run without usable altitude (pace
+/// not compared; a hilly run with it is compared in grade-adjusted pace), a run too short
 /// to read trends from, an unplanned run (no target), or a non-finite value.
 public struct DebriefFacts: Equatable, Sendable {
     public let activityID: String
@@ -110,6 +111,20 @@ public struct DebriefFacts: Equatable, Sendable {
             if run.isTreadmill {
                 facts.append(DebriefFact(id: "pace", kind: .paceNotCompared(.treadmill), values: [],
                                          source: "CompletedRun.isTreadmill (SPEC 3.8)"))
+            } else if let gap = m.gradeAdjusted, finitePositive(gap.paceSecondsPerKm) {
+                // Hilly: the same classifier and tolerance as a flat run, on grade-adjusted pace (F7 part 1).
+                var values = [DebriefValue(name: .pace, value: gap.paceSecondsPerKm, unit: .secondsPerKm)]
+                if let c = m.climbMetersPerKm, c.isFinite { values.append(DebriefValue(name: .climb, value: c, unit: .metersPerKm)) }
+                var comparison: DebriefComparison?
+                if let t = expected?.pace, finitePositive(t.fastestSecondsPerKm), finitePositive(t.slowestSecondsPerKm),
+                   limits.paceTolerance.isFinite, limits.paceTolerance >= 0 {
+                    values += [DebriefValue(name: .targetFastest, value: t.fastestSecondsPerKm, unit: .secondsPerKm),
+                               DebriefValue(name: .targetSlowest, value: t.slowestSecondsPerKm, unit: .secondsPerKm),
+                               DebriefValue(name: .paceTolerance, value: limits.paceTolerance, unit: .fraction)]
+                    comparison = paceComparison(gap.paceSecondsPerKm, t, tolerance: limits.paceTolerance)
+                }
+                facts.append(DebriefFact(id: "pace", kind: .paceGradeAdjusted(scope), values: values, comparison: comparison,
+                                         source: "RunMetrics.gradeAdjusted (RecordedGAP) against the planned PaceTarget (SPEC 3.6, F7)"))
             } else {
                 var values = [DebriefValue(name: .pace, value: 1000 / speed, unit: .secondsPerKm)]
                 if let c = m.climbMetersPerKm, c.isFinite { values.append(DebriefValue(name: .climb, value: c, unit: .metersPerKm)) }

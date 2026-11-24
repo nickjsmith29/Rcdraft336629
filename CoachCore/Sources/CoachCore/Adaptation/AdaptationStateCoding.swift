@@ -187,6 +187,8 @@ struct MetricsCoding: Codable {
     var paceSecondsPerKm: Double?
     var paceNotComparableReason: String?
     var climbMetersPerKm: Double?
+    /// Added after format version 4 without a bump: absent in older states (decodes to nil).
+    var gradeAdjusted: RecordedGAP?
     var decoupling: DecouplingCoding?
     var powerDecoupling: DecouplingCoding?
     var cadenceFadePercent: Double?
@@ -201,6 +203,7 @@ struct MetricsCoding: Codable {
         paceSecondsPerKm = m.paceSecondsPerKm
         paceNotComparableReason = m.paceNotComparableReason
         climbMetersPerKm = m.climbMetersPerKm
+        gradeAdjusted = m.gradeAdjusted
         decoupling = m.decoupling.map(DecouplingCoding.init)
         powerDecoupling = m.powerDecoupling.map(DecouplingCoding.init)
         cadenceFadePercent = m.cadenceFadePercent
@@ -211,6 +214,7 @@ struct MetricsCoding: Codable {
         RunMetrics(activityID: activityID, movingSeconds: movingSeconds, plannedSeconds: plannedSeconds, key: key,
                    plannedKeySeconds: plannedKeySeconds, paceSecondsPerKm: paceSecondsPerKm,
                    paceNotComparableReason: paceNotComparableReason, climbMetersPerKm: climbMetersPerKm,
+                   gradeAdjusted: gradeAdjusted,
                    decoupling: try decoupling?.value(), powerDecoupling: try powerDecoupling?.value(),
                    cadenceFadePercent: cadenceFadePercent, rpe: rpe)
     }

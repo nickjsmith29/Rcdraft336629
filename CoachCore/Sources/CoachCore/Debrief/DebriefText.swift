@@ -148,10 +148,12 @@ public enum DebriefText {
         }
         if let f = d.fact("pace") {
             switch f.kind {
-            case .pace(let scope):
+            case .pace(let scope), .paceGradeAdjusted(let scope):
                 guard let pace = f.values.first(where: { $0.name == .pace }) else { break }
                 let per = UnitFormatting.paceSuffix(u)
-                var s = "Pace was \(fmt(pace, d, u))\(per) \(words(scope))"
+                var adjusted = false
+                if case .paceGradeAdjusted = f.kind { adjusted = true }
+                var s = "\(adjusted ? "Grade-adjusted pace" : "Pace") was \(fmt(pace, d, u))\(per) \(words(scope))"
                 if let c = f.comparison, let fast = f.values.first(where: { $0.name == .targetFastest }),
                    let slow = f.values.first(where: { $0.name == .targetSlowest }) {
                     let stated: Stated?
@@ -169,7 +171,7 @@ public enum DebriefText {
                     let a = stated?.limits[.targetFastest] ?? fmt(fast, d, u), b = stated?.limits[.targetSlowest] ?? fmt(slow, d, u)
                     let target = "the \(a) to \(b)\(per) target"
                     let j = stated?.just ?? ""
-                    if let stated { s = "Pace was \(stated.value)\(per) \(words(scope))"; cmps += stated.comparisons }
+                    if let stated { s = "\(adjusted ? "Grade-adjusted pace" : "Pace") was \(stated.value)\(per) \(words(scope))"; cmps += stated.comparisons }
                     switch c {
                     case .within: s += ", \(j)inside \(target)"
                     case .withinTolerance:
@@ -178,6 +180,10 @@ public enum DebriefText {
                     case .below: s += ", \(j)faster than \(target)"
                     case .above: s += ", \(j)slower than \(target)"
                     }
+                }
+                if adjusted {
+                    s += f.values.first { $0.name == .climb }
+                        .map { ", on a route that climbed \(fmt($0, d, u)) \(UnitFormatting.climbUnit(u))" } ?? ", on a hilly route"
                 }
                 parts.append(s + ".")
                 ids.append(f.id)
