@@ -39,3 +39,5 @@ These are done by the repo owner, never by Claude Code. All of them work from a 
 8. Install TestFlight on the iPhone and accept the build.
 
 Until those secrets exist, the TestFlight workflow skips itself on a cheap Linux check, so it costs no macOS minutes. The Anthropic API key is not a CI secret; it's entered in the app's Settings and kept in the Keychain.
+
+**App build check.** The "App build (unsigned)" workflow compiles the iPhone and Watch apps for the simulator on a free macOS runner. It runs on ready pull requests that touch `App/`, `WatchApp/`, `project.yml` or `CoachCore/Sources/`, and by hand. It doesn't sign, run on a device or upload anything, and needs no secrets; the signed TestFlight build (`ios.yml`) still waits on the Apple setup above.
