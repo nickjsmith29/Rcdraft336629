@@ -87,7 +87,18 @@ public struct GradeEstimator: Sendable {
 
     private func fit(at time: Double) -> GradeEstimate? {
         guard let seen = lastAltitudeTime, time - seen <= config.maxAltitudeAgeSeconds,
-              samples.count >= config.minSamples,
+              let fitted = Self.fitGrade(samples[...], config: config) else { return nil }
+        return GradeEstimate(time: time, grade: fitted.grade, spanMeters: fitted.span)
+    }
+
+    /// The least-squares grade through (distance, altitude) points, clamped to
+    /// `config.maxAbsGrade`, or nil when there are fewer than `minSamples`
+    /// points or they span under `minSpanMeters`. The one fit behind both the
+    /// live grade and the recorded-run grade (`RecordedGAP`), so the two agree
+    /// on a window's slope. `samples` must be in increasing distance.
+    static func fitGrade(_ samples: ArraySlice<(d: Double, a: Double)>,
+                         config: GradeEstimatorConfig) -> (grade: Double, span: Double)? {
+        guard samples.count >= config.minSamples,
               let first = samples.first, let last = samples.last,
               last.d - first.d >= config.minSpanMeters else { return nil }
         // Least squares in one pass, around the first sample's values for numerical safety.
@@ -102,6 +113,6 @@ public struct GradeEstimator: Sendable {
         let sxy = sda - sd * sa / n
         guard sxx > 1e-9 else { return nil }
         let slope = min(max(sxy / sxx, -config.maxAbsGrade), config.maxAbsGrade)
-        return GradeEstimate(time: time, grade: slope, spanMeters: last.d - first.d)
+        return (slope, last.d - first.d)
     }
 }
