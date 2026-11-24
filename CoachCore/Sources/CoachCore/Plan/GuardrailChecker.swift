@@ -719,7 +719,8 @@ public enum GuardrailChecker {
                 let before = violations.count
                 checkPlainWeeklyIncrease(i, volume: v, known: known)
                 if violations.count == before {
-                    skips.removeAll { $0.rule == .weeklyIncrease && $0.weekStart == weeks[i].weekStart }
+                    let weekStart = weeks[i].weekStart
+                    skips.removeAll { $0.rule == .weeklyIncrease && $0.weekStart == weekStart }
                     skip(.weeklyIncrease, i, "a week of unknown volume in the weeks before may hide a short break, after which the return ramp (SPEC 3.5 rule 4) would allow as little as \(vol(floor))")
                 }
                 return
