@@ -152,14 +152,18 @@ final class OwnerGuardrailDecisionsTests: XCTestCase {
         XCTAssertEqual(weekly(check(mixed, week(5, 300))).map(\.allowed), [0.7 * 300 * 60])
     }
 
-    func testLongBreakKeepsThePlainRules() {
-        // Three weeks off: no ramp and no substitution; the zero reference
-        // leaves the 10% check unevaluated, as before #62.
+    func testALongerBreakReturnsByTheSteps() {
+        // Three weeks off (3.5 rule 4, SPEC 0.8, #32): the zero weeks make the
+        // plain 10% check useless, so week 1 back holds at most 65% of the
+        // pre-break 300, 195 minutes. With the ramp off, the plain rules: the
+        // zero reference leaves the 10% check unevaluated, as before #62.
         let h = weeks([300, 300, 300, 300, 0, 0, 0], prefix: "h")
         let r = check(h, week(7, 400))
-        XCTAssertTrue(weekly(r).isEmpty)
-        XCTAssertTrue(r.notEvaluated.contains { $0.rule == .weeklyIncrease && $0.reason.contains("no volume") })
-        XCTAssertEqual(r, check(h, week(7, 400), limits: GuardrailLimits(maxShortBreakWeeks: 0)))
+        XCTAssertEqual(weekly(r).map(\.allowed), [195.0 * 60])
+        XCTAssertTrue(weekly(check(h, week(7, 195))).isEmpty)
+        let plain = check(h, week(7, 400), limits: GuardrailLimits(maxShortBreakWeeks: 0))
+        XCTAssertTrue(weekly(plain).isEmpty)
+        XCTAssertTrue(plain.notEvaluated.contains { $0.rule == .weeklyIncrease && $0.reason.contains("no volume") })
     }
 
     func testARaceOnlyWeekIsNotABreak() {
@@ -378,20 +382,22 @@ final class OwnerGuardrailDecisionsTests: XCTestCase {
         }
     }
 
-    func testPropertyLongBreaksMatchThePlainRules() {
+    func testPropertySwitchingTheLongerBreakReturnOffRestoresThePlainRules() {
         // Breaks of 3 or 4 weeks (and weeks back too big to start a new one):
-        // the report is the same with the ramp switched off.
+        // with the longer-break return off (SPEC 0.8 made it the default), the
+        // report is the same as with the whole ramp switched off.
         var rng = SplitMix(seed: 20)
         let plain = GuardrailLimits(maxShortBreakWeeks: 0)
+        let off = GuardrailLimits(longerBreakReturnSteps: [])
         for n in 0..<120 {
             let pre = (0..<(2 + Int(rng.next() * 4))).map { _ in (200 + rng.next() * 200).rounded() }
-            let off = 3 + Int(rng.next() * 2)
+            let breakWeeks = 3 + Int(rng.next() * 2)
             let back = (0..<(2 + Int(rng.next() * 6))).map { _ in (101 + rng.next() * 300).rounded() }
-            let all = pre + [Double](repeating: 0, count: off) + back
-            let split = pre.count + off + Int(rng.next() * Double(back.count))
+            let all = pre + [Double](repeating: 0, count: breakWeeks) + back
+            let split = pre.count + breakWeeks + Int(rng.next() * Double(back.count))
             let h = weeks(Array(all.prefix(split)), prefix: "h")
             let p = weeks(Array(all.dropFirst(split)), start: split, prefix: "p")
-            XCTAssertEqual(check(h, p), check(h, p, limits: plain), "#\(n) \(all)")
+            XCTAssertEqual(check(h, p, limits: off), check(h, p, limits: plain), "#\(n) \(all)")
         }
     }
 

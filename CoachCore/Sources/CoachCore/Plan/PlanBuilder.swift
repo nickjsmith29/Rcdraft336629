@@ -614,13 +614,21 @@ public enum PlanBuilder {
         /// A week counted as no break week whatever its volume: the open start
         /// week just over the break line (`PlanBuilder.ledgers`).
         var notBreakWeek: Int?
+        /// The first week of the plan: weeks before it were run before the
+        /// plan existed, and a return week among them counts as planned at its
+        /// step's ceiling (3.5 rule 4). Default `.max`: every week is history.
+        var plannedFrom: Int
+        /// First weeks of breaks that are longer by days (more than 14 days
+        /// off in one or two break weeks, `GuardrailChecker.longerByDays`).
+        var longerByDays: Set<Int>
 
         /// `outside` defaults to `volumes` (no races), and then
         /// `outsideBuildWeek` to `buildWeek`. Missing `lows` entries count as
         /// the week's volume, or 0 when it is unknown.
         init(volumes: [Double?], limits: GuardrailLimits, buildWeek: Int? = nil, lows: [Double] = [],
              outside: [Double?]? = nil, outsideLows: [Double]? = nil, raceWeeks: Set<Int> = [],
-             outsideBuildWeek: Int? = nil, notBreakWeek: Int? = nil) {
+             outsideBuildWeek: Int? = nil, notBreakWeek: Int? = nil, plannedFrom: Int = .max,
+             longerByDays: Set<Int> = []) {
             func padded(_ l: [Double], _ v: [Double?]) -> [Double] {
                 Array(l.prefix(v.count)) + v.dropFirst(min(l.count, v.count)).map { $0 ?? 0 }
             }
@@ -634,6 +642,8 @@ public enum PlanBuilder {
             self.raceWeeks = raceWeeks
             self.outsideBuildWeek = outsideBuildWeek ?? (outside == nil ? buildWeek : nil)
             self.notBreakWeek = notBreakWeek
+            self.plannedFrom = plannedFrom
+            self.longerByDays = longerByDays
         }
 
         var last: Double? { volumes.last.flatMap { $0 } }
@@ -648,7 +658,11 @@ public enum PlanBuilder {
         /// The checker's breaks (3.5 rule 4).
         var breaks: [LoadBreak] {
             GuardrailChecker.breaks(volumes: outside, lows: outsideLows, raceWeeks: raceWeeks, notBreak: notBreakWeek,
-                                    limits: limits)
+                                    limits: limits).map { b in
+                var b = b
+                b.longerByDays = longerByDays.contains(b.first)
+                return b
+            }
         }
 
         /// The checker's recovery-week test. Unlike the checker it has **no
@@ -693,13 +707,25 @@ public enum PlanBuilder {
             GuardrailChecker.returnRamp(volumes.count, volumes: outside, lows: outsideLows, breaks: breaks, limits: limits)
         }
 
+        /// The step of the return after a longer break that the next week is
+        /// (3.5 rule 4, owner's decision, #32); it replaces the 10% reference.
+        var nextLongReturn: LongReturn? {
+            GuardrailChecker.longReturn(volumes.count, volumes: outside, lows: outsideLows, breaks: breaks,
+                                        plannedFrom: plannedFrom, limits: limits)
+        }
+
         /// Most quality sessions the next week may hold when it is week 1 or
-        /// 2 of the return ramp after a short break (3.5 rule 4); where an
+        /// 2 of the return ramp after a short break or of the return after a
+        /// longer one (3.5 rule 4), the lower of the two; where an
         /// unknown week may hide such a break (#40), the least that break
         /// could allow, as `nextCap` reads the hidden-break floor. Nil when
         /// neither sets a limit.
         var nextReturnRampMaxQuality: Int? {
-            if let ramp = nextReturnRamp { return limits.returnRampMaxQuality(step: ramp.step) }
+            let long = nextLongReturn.flatMap { limits.returnRampMaxQuality(step: $0.returnWeek) }
+            if let ramp = nextReturnRamp {
+                return [limits.returnRampMaxQuality(step: ramp.step), long].compactMap { $0 }.min()
+            }
+            if let long { return long }
             return GuardrailChecker.hiddenBreakMaxQuality(volumes.count, volumes: outside, lows: outsideLows, raceWeeks: raceWeeks,
                                                           unbounded: false, limits: limits)
         }
@@ -714,7 +740,7 @@ public enum PlanBuilder {
         /// unknown week with no session of known time (#40): `nextCap` is then
         /// 0, and only a week of known volume run first gives a reference.
         var nextReferenceIsUnknownZero: Bool {
-            guard nextReturnRamp == nil, let ref = nextReference else { return false }
+            guard nextReturnRamp == nil, nextLongReturn == nil, let ref = nextReference else { return false }
             return ref.value <= 0 && ref.index != outsideBuildWeek
                 && (ref.source == .unknownWeekBound || outside[ref.index] == nil)
         }
@@ -722,13 +748,14 @@ public enum PlanBuilder {
         /// True when the next week's 10% reference is 0 and rests on
         /// `outsideBuildWeek`, an open week that may end arbitrarily small.
         var nextReferenceIsOpenZero: Bool {
-            guard nextReturnRamp == nil, let ref = nextReference else { return false }
+            guard nextReturnRamp == nil, nextLongReturn == nil, let ref = nextReference else { return false }
             return ref.value <= 0 && ref.index == outsideBuildWeek
         }
 
         /// Week `k` as the earlier 4 weeks of the rolling check count it.
         func rollingPrior(_ k: Int, _ brks: [LoadBreak]) -> Double {
-            GuardrailChecker.rollingPriorVolume(k, volumes: outside, lows: outsideLows, breaks: brks, limits: limits)
+            GuardrailChecker.rollingPriorVolume(k, volumes: outside, lows: outsideLows, breaks: brks, plannedFrom: plannedFrom,
+                                                limits: limits)
         }
 
         /// Most volume outside races the next week may have under the weekly,
@@ -747,14 +774,27 @@ public enum PlanBuilder {
                     plain = 0
                 }
             }
-            if let ramp = nextReturnRamp {
+            let long = nextLongReturn
+            if let long {
+                // After a longer break the steps replace the 10% check; in the
+                // first 3 weeks of a break that is also a short one by weeks,
+                // the lower of the ramp and the steps (3.5 rule 4).
+                cap = min(long.ceiling, nextReturnRamp?.allowed ?? .infinity)
+                // A week that stays at or under the break line (a quarter of the pre-break level)
+                // is one more break week, not a return week: the checker then holds it to the plain
+                // 10% check, so a plain cap under that line bounds the week too (heuristic: the
+                // conservative reading; the week is sized under the plain cap or over the line).
+                if long.returnWeek == 1, let plain, plain > 0, plain < limits.breakWeekMaxRatio * long.brk.level {
+                    cap = min(cap, plain)
+                }
+            } else if let ramp = nextReturnRamp {
                 cap = ramp.allowed
             } else if let plain {
                 cap = plain
             }
             // A week of unknown volume nearby may hide a short break (#40):
             // the least return-ramp cap it could set.
-            if nextReturnRamp == nil,
+            if nextReturnRamp == nil, long == nil,
                let floor = GuardrailChecker.hiddenBreakFloor(i, volumes: outside, lows: outsideLows, raceWeeks: raceWeeks, unbounded: false,
                                                              limits: limits) {
                 cap = min(cap, floor)
@@ -892,9 +932,11 @@ public enum PlanBuilder {
     /// return ramp).
     static func ledgers(volumes: [Double?], lows: [Double] = [], outside: [Double?]? = nil, outsideLows: [Double]? = nil,
                         raceWeeks: Set<Int> = [], lastWeekOpen: Bool, recentWeekly: Double,
-                        limits: GuardrailLimits) -> LedgerSet {
+                        limits: GuardrailLimits, longerByDays: Set<Int> = []) -> LedgerSet {
+        // The plan's weeks come after the history's: a return week among the
+        // history's counts as planned at its step's ceiling (3.5 rule 4).
         let exact = LoadLedger(volumes: volumes, limits: limits, lows: lows, outside: outside, outsideLows: outsideLows,
-                               raceWeeks: raceWeeks)
+                               raceWeeks: raceWeeks, plannedFrom: volumes.count, longerByDays: longerByDays)
         let p = volumes.count - 1
         guard lastWeekOpen, p >= 0, let n = exact.outside[p], n.isFinite else {
             return LedgerSet(scenarios: [exact])
@@ -902,7 +944,7 @@ public enum PlanBuilder {
         let total = exact.volumes[p]
         let before = LoadLedger(volumes: Array(exact.volumes.prefix(p)), limits: limits, lows: Array(exact.lows.prefix(p)),
                                 outside: Array(exact.outside.prefix(p)), outsideLows: Array(exact.outsideLows.prefix(p)),
-                                raceWeeks: raceWeeks.filter { $0 < p })
+                                raceWeeks: raceWeeks.filter { $0 < p }, plannedFrom: p, longerByDays: longerByDays)
         let beforeUnknown = p >= 1 && (exact.volumes[p - 1] == nil || exact.outside[p - 1] == nil)
         func weekBefore(_ series: [Double?]) -> Double { p >= 1 ? max(0, series[p - 1] ?? 0) : 0 }
 
@@ -1168,12 +1210,25 @@ private struct Builder {
                                    lastWeekContaining: v.firstMonday.addingTimeInterval(-1), timeZone: timeZone)
         }
         self.startWeekOpen = open
+        let outsideVolumes = weeks.map { $0.volumeOutsideRaces(.time) }
+        let outsideLows = weeks.map { $0.knownVolumeOutsideRaces(.time) }
+        let weekRaces = Set(weeks.indices.filter { weeks[$0].hasRace })
+        // Breaks of more than 14 days off that read as only one or two break
+        // weeks are longer breaks too (3.5 rule 4). The day before the start
+        // is the last day whose runs are known, and a break still running
+        // there counts a day more, as the checker may count the days up to
+        // the plan's first run (the conservative reading).
+        let dayBeforeStart = PlanCalendar.calendar(timeZone: timeZone).date(byAdding: .day, value: -1, to: input.startDate)
+        let byDays = Set(GuardrailChecker.longerByDays(
+            GuardrailChecker.breaks(volumes: outsideVolumes, lows: outsideLows, raceWeeks: weekRaces, limits: limits),
+            weeks: weeks, timeZone: timeZone, limits: limits, lastKnown: dayBeforeStart, ongoingSlack: 1)
+            .filter(\.longerByDays).map(\.first))
         self.ledger = PlanBuilder.ledgers(volumes: weeks.map { $0.volume(.time) }, lows: weeks.map { $0.knownVolume(.time) },
-                                          outside: weeks.map { $0.volumeOutsideRaces(.time) },
-                                          outsideLows: weeks.map { $0.knownVolumeOutsideRaces(.time) },
-                                          raceWeeks: Set(weeks.indices.filter { weeks[$0].hasRace }),
+                                          outside: outsideVolumes,
+                                          outsideLows: outsideLows,
+                                          raceWeeks: weekRaces,
                                           lastWeekOpen: open,
-                                          recentWeekly: v.recentWeekly, limits: limits)
+                                          recentWeekly: v.recentWeekly, limits: limits, longerByDays: byDays)
         let complete = weeks.filter { $0.weekStart < startWeek }.suffix(4).compactMap { $0.volume(.time) }
         self.historyMean = complete.isEmpty ? nil : complete.reduce(0, +) / Double(complete.count)
         self.returnPaces = ReturnPaceSchedule.latest(history: history, efforts: input.anchorEfforts,
@@ -1926,7 +1981,15 @@ private struct Builder {
         checkLimits.maxTrainingRunSeconds = min(limits.maxTrainingRunSeconds, maxSession)
         checkLimits.easyRunsWithinLongRun = true
         let report = GuardrailChecker.check(history: history, planned: planned, timeZone: timeZone, limits: checkLimits)
-        guard report.passed else { return .cannotBuild([.failsGuardrails(report)]) }
+        guard report.passed else {
+            // A race in week 1 back after a longer break (the plan's own low weeks kept the break
+            // going up to the race week) cannot hold week 1's no-quality limit, which counts the race
+            // (3.5 rule 4): no week of this plan can be made workable, an explicit issue.
+            if let first = report.violations.first, report.violations.allSatisfy({ $0.rule == .qualitySessions && $0.weekStart == weeks.last?.weekStart }) {
+                return .cannotBuild([.noWorkableWeek(weekStart: first.weekStart, allowedSeconds: 0)])
+            }
+            return .cannotBuild([.failsGuardrails(report)])
+        }
 
         // Label recovery weeks the way the checker reads them.
         let offset = ledger.count - weeks.count

@@ -54,16 +54,20 @@ final class BreakNoWorkableWeekTests: XCTestCase {
 
     private func minutes(_ w: TrainingPlanWeek) -> Double { w.workouts.reduce(0) { $0 + $1.durationSeconds } / 60 }
 
-    /// The last full week of the baseline before `asOf`, in minutes.
-    private func lastFullWeekMinutes(_ h: [PlannedWorkout], before asOf: Date) -> Double {
-        let monday = PlanCalendar.weekStart(containing: asOf, timeZone: tz)
-        let previous = PlanCalendar.weekStart(weeks: -1, after: monday, timeZone: tz)
-        return h.filter { $0.date >= previous && $0.date < monday }.reduce(0) { $0 + $1.durationSeconds } / 60
-    }
-
-    /// Builds the plan and checks it: it builds, it passes the guardrail checker (3.5), and (SPEC 3.5 rule 4,
-    /// "longer than 14 days: normal progression") its first full week is sized from the weeks run since the
-    /// break: at most 10% over the last full week back (rule 2, heuristic).
+    /// Builds the plan and checks it: it builds, it passes the guardrail checker (3.5), and its first weeks
+    /// are bounded by the return's steps (3.5 rule 4, SPEC 0.8, owner's decision #32), worked out by hand:
+    ///
+    /// - The pre-break level L is the mean of the 4 weeks before the break: 220 minutes for the 3 day shape
+    ///   (60 + 60 + 100) and 280 for the 5 day one (40 + 50 + 50 + 40 + 100). The steps are 65%, 82.5% and 100% of L:
+    ///   143, 181.5 and 220 for 3 days, 182, 231 and 280 for 5 days.
+    /// - The weeks back are run at 180 (3 days) and 190 minutes (5 days), 82% and 68% of L, and the start week,
+    ///   a Wednesday, has no run yet. That is a return week run under 1/1.2 of its step's ceiling, so it is short:
+    ///   the steps restart, and the plan's week 0 is step 1 (65% of L; the open week's own volume, 0, is under
+    ///   that, so the ceiling is the step's). Week 1 is step 2 (82.5%) and week 2 step 3 (100%); planned weeks
+    ///   are never short, so the return ends with week 2 and week 3 is held by the plain 10% check over the
+    ///   week before it (or, past a recovery week, the one before that).
+    /// - This replaces the first version of this test, which bounded week 0 at 10% over the last full week back:
+    ///   that was the plain rule, which gave no workable week (#79).
     private func assertBuilds(_ name: String, _ s: Shape, _ distance: Double, breakWeeks: Int, back: Int,
                               file: StaticString = #filePath, line: UInt = #line) {
         let label = "\(name), \(Int(distance)) m, \(breakWeeks) break weeks, \(back) weeks back"
@@ -71,10 +75,15 @@ final class BreakNoWorkableWeekTests: XCTestCase {
         guard let plan = r.plan else { return XCTFail("\(label): \(r.issues)", file: file, line: line) }
         let report = GuardrailChecker.check(history: h, planned: plan.workouts, timeZone: tz)
         XCTAssertTrue(report.passed, "\(label): \(report.violations.map(\.explanation))", file: file, line: line)
-        let last = lastFullWeekMinutes(h, before: baseline(s, breakWeeks: breakWeeks, back: back).asOf)
-        let first = minutes(plan.weeks[0])
-        XCTAssertGreaterThan(first, 0, label, file: file, line: line)
-        XCTAssertLessThanOrEqual(first, 1.1 * last + 1e-6, "\(label): week 1 \(first) min after a week of \(last)", file: file, line: line)
+        let level = s.days.values.reduce(0, +)
+        let weeks = plan.weeks.map { minutes($0) }
+        XCTAssertGreaterThan(weeks[0], 0, label, file: file, line: line)
+        for (k, share) in [0.65, 0.825, 1.0].enumerated() {
+            XCTAssertLessThanOrEqual(weeks[k], share * level + 1e-6,
+                                     "\(label): week \(k) is \(weeks[k]) min, over step \(k + 1)'s \(share * level)", file: file, line: line)
+        }
+        XCTAssertLessThanOrEqual(weeks[3], 1.1 * max(weeks[1], weeks[2]) + 1e-6,
+                                 "\(label): week 3 is \(weeks[3]) min after \(weeks[1]) and \(weeks[2])", file: file, line: line)
     }
 
     private let shapes: [(String, Shape)] = [("3 days", three), ("5 days", five)]
@@ -136,4 +145,24 @@ final class BreakNoWorkableWeekTests: XCTestCase {
 
     static let noBreakThree: [Double] = [135, 144, 153, 117, 162, 171, 177, 138, 189, 201, 156, 216, 153, 142.1]
     static let noBreakFive: [Double] = [176, 191, 207, 155, 225, 226, 228, 170, 247, 267, 210, 286, 214, 167.1]
+
+    /// A one week break (7 days off, a short break by both measures) is not a longer break, so it keeps rule 4's
+    /// short-break ramp and builds exactly as on main at 02e8f72 (pinned from main's output, a characterization).
+    /// By hand: the level is 220 minutes (3 day shape) or 280 (5 day shape) and the three weeks back are the
+    /// shape's easy week (180 and 220 minutes). The ramp caps return weeks 1 to 3 at 70, 90 and 100% of the level
+    /// (154, 198, 220 and 196, 252, 280); the first planned weeks, 90, 96, 102 and 98, 105, 114 minutes, sit under
+    /// them, as the plans sized from the recent weeks do.
+    func testAOneWeekBreakBuildsAsBefore() throws {
+        let pinned: [(Shape, [Double])] = [
+            (Self.three, [90, 96, 102, 76, 108, 114, 117, 92, 126, 135, 105, 144, 99, 112.1]),
+            (Self.five, [98, 105, 114, 85, 123, 122, 127, 95, 137, 149, 111, 158, 125, 120.1])]
+        for (s, expected) in pinned {
+            let (result, history) = build(s, distance: Distance.tenK, breakWeeks: 1, back: 3)
+            let plan = try XCTUnwrap(result.plan)
+            XCTAssertEqual(plan.weeks.map { (minutes($0) * 10).rounded() / 10 }, expected)
+            let level = s.days.values.reduce(0, +)
+            for (k, cap) in zip(0..<3, [0.7, 0.9, 1.0]) { XCTAssertLessThanOrEqual(minutes(plan.weeks[k]), cap * level + 1e-6) }
+            XCTAssertTrue(GuardrailChecker.check(history: history, planned: plan.workouts, timeZone: tz).passed)
+        }
+    }
 }

@@ -168,9 +168,13 @@ final class ReturnRampQualityAndLongRunTrimTests: XCTestCase {
     }
 
     func testRampQualityLimitFollowsTheRampItself() {
-        // A long break (3 weeks off) keeps the plain rules.
+        // A longer break (3 weeks off) returns by rule 4's steps (SPEC 0.8): week 1 back has no quality
+        // session. With the steps switched off, it keeps the plain rules.
         let h = (0..<4).flatMap { week($0, 300) }
-        XCTAssertEqual(quality(h, week(7, 200, quality: 2)), [])
+        XCTAssertEqual(quality(h, week(7, 200, quality: 2)).map(\.allowed), [0])
+        var noSteps = GuardrailLimits.default
+        noSteps.longerBreakReturnSteps = []
+        XCTAssertEqual(quality(h, week(7, 200, quality: 2), limits: noSteps), [])
         // The ramp switched off, or its quality limit, keeps the plain limit.
         var off = GuardrailLimits.default
         off.maxShortBreakWeeks = 0

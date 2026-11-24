@@ -86,6 +86,16 @@ public struct GuardrailLimits: Equatable, Sendable {
     /// the list keep the plain limit; empty switches the limit off. The long
     /// run's steady finish is part of the long run, not a quality session.
     public var breakReturnMaxQualitySessions: [Int] { didSet { breakReturnMaxQualitySessions = Self.valid(breakReturnMaxQualitySessions, \.breakReturnMaxQualitySessions) } }
+    /// The return steps after a longer break (3.5 rule 4, owner's decision,
+    /// #32): return step `k` holds at most `longerBreakReturnSteps[k-1]` x the
+    /// pre-break weekly volume, outside races. A longer break is more than 14
+    /// days off or three or more break weeks in a row. The same steps as rule
+    /// 7's return after a pain stop of more than 14 days. Default
+    /// `PlanHeuristics.longerBreakReturnSteps` (0.65, 0.825, 1.0). Heuristic: no
+    /// study tests a return after a longer break [6][7][10]. Empty, or
+    /// `maxShortBreakWeeks` 0, switches the longer-break return off (the plain
+    /// rules then apply to those weeks).
+    public var longerBreakReturnSteps: [Double] { didSet { longerBreakReturnSteps = Self.valid(longerBreakReturnSteps, \.longerBreakReturnSteps) } }
     /// Most a regrowth week may rise over the week before it as run, as a
     /// fraction (3.5 rule 6, owner decision Nov 21, #107; `GuardrailRegrowth`).
     /// Default `PlanHeuristics.regrowthMaxWeeklyRise` (0.20). Heuristic.
@@ -130,7 +140,8 @@ public struct GuardrailLimits: Equatable, Sendable {
                 regrowthMaxWeeklyRise: Double = PlanHeuristics.regrowthMaxWeeklyRise,
                 regrowthReturnSteps: [Double] = PlanHeuristics.regrowthReturnSteps,
                 maxTrainingRunSeconds: Double = .infinity,
-                easyRunsWithinLongRun: Bool = false) {
+                easyRunsWithinLongRun: Bool = false,
+                longerBreakReturnSteps: [Double] = PlanHeuristics.longerBreakReturnSteps) {
         self.measure = measure
         self.maxWeeklyIncrease = Self.valid(maxWeeklyIncrease, \.maxWeeklyIncrease)
         self.maxFourWeekIncrease = Self.valid(maxFourWeekIncrease, \.maxFourWeekIncrease)
@@ -152,6 +163,7 @@ public struct GuardrailLimits: Equatable, Sendable {
         self.regrowthReturnSteps = Self.valid(regrowthReturnSteps, \.regrowthReturnSteps)
         self.maxTrainingRunSeconds = Self.valid(maxTrainingRunSeconds, \.maxTrainingRunSeconds)
         self.easyRunsWithinLongRun = easyRunsWithinLongRun
+        self.longerBreakReturnSteps = Self.valid(longerBreakReturnSteps, \.longerBreakReturnSteps)
     }
 
     /// Most quality sessions allowed in week `step` of the return ramp (3.5
@@ -533,7 +545,12 @@ public enum GuardrailChecker {
         let lastChecked = PlanCalendar.weekStart(containing: planLast, timeZone: timeZone)
         let checked = weeks.indices.filter { weeks[$0].weekStart >= firstChecked && weeks[$0].weekStart <= lastChecked }
 
-        var ctx = Context(weeks: weeks, limits: limits, timeZone: timeZone, units: units, regrowth: regrowth)
+        // Weeks before the first planned week were run before the plan existed:
+        // a return week among them counts as planned at its step's ceiling
+        // (3.5 rule 4, the restart after a week run short).
+        let plannedFrom = weeks.firstIndex { $0.weekStart >= firstChecked } ?? weeks.count
+        var ctx = Context(weeks: weeks, limits: limits, timeZone: timeZone, units: units, regrowth: regrowth,
+                          plannedFrom: plannedFrom)
         let plannedIDs = Set(planned.map(\.id))
         for i in checked {
             ctx.checkWeeklyIncrease(i)
@@ -569,6 +586,9 @@ public enum GuardrailChecker {
         let raceWeeks: Set<Int>
         /// Breaks in `outside` (3.5 rule 4, read in weeks).
         let breaks: [LoadBreak]
+        /// The first week of the plan: the weeks before it were run before the
+        /// plan existed (3.5 rule 4, the restart after a week run short).
+        let plannedFrom: Int
         /// Weeks where the marathon long-run share applies (3.5 rule 5).
         let marathon: [Bool]
         /// The regrowth week at each index, and the original-plan volume of
@@ -580,8 +600,9 @@ public enum GuardrailChecker {
         var flags: [GuardrailFlag] = []
 
         init(weeks: [PlanWeek], limits: GuardrailLimits, timeZone: TimeZone, units: UnitPreference,
-             regrowth: GuardrailRegrowth = .none) {
+             regrowth: GuardrailRegrowth = .none, plannedFrom: Int = .max) {
             self.weeks = weeks
+            self.plannedFrom = plannedFrom
             self.regrowthWeeks = weeks.map { w in
                 regrowth.week(w.weekStart).flatMap { $0.original.isFinite && $0.original >= 0 && $0.step >= 1 ? $0 : nil }
             }
@@ -596,7 +617,9 @@ public enum GuardrailChecker {
             self.outside = weeks.map { $0.volumeOutsideRaces(limits.measure) }
             self.outsideLows = weeks.map { $0.knownVolumeOutsideRaces(limits.measure) }
             self.raceWeeks = Set(weeks.indices.filter { weeks[$0].hasRace })
-            self.breaks = GuardrailChecker.breaks(volumes: outside, lows: outsideLows, raceWeeks: raceWeeks, limits: limits)
+            self.breaks = GuardrailChecker.longerByDays(
+                GuardrailChecker.breaks(volumes: outside, lows: outsideLows, raceWeeks: raceWeeks, limits: limits),
+                weeks: weeks, timeZone: timeZone, limits: limits)
             self.marathon = GuardrailChecker.marathonWeeks(weeks)
         }
 
@@ -675,6 +698,13 @@ public enum GuardrailChecker {
             // ceilings and the spike rule bound the weeks back, not rule 2's
             // checks or rule 4's ramp measured from the stop weeks (3.5 rule 7).
             if let g = regrowthWeeks[i], g.maxRise == nil { return checkRegrowth(i, g, volume: v, known: known) }
+            // After a longer break the steps replace the 10% check (3.5 rule 4);
+            // in the first 3 weeks of a break that is also a short one by
+            // weeks, the lower of the short-break caps and the steps.
+            if let long = GuardrailChecker.longReturn(i, volumes: outside, lows: outsideLows, breaks: breaks,
+                                                      plannedFrom: plannedFrom, limits: limits) {
+                return checkLongReturn(i, long, volume: v, known: known, regrowth: regrowthWeeks[i])
+            }
             if let ramp = GuardrailChecker.returnRamp(i, volumes: outside, lows: outsideLows, breaks: breaks, limits: limits) {
                 return checkReturnRamp(i, ramp, volume: v, known: known, regrowth: regrowthWeeks[i])
             }
@@ -813,6 +843,43 @@ public enum GuardrailChecker {
                     "volume\(outsideNote(i)) \(atLeast(known))\(vol(v))\(knownNote(known)) is above the return ramp: \(why), so at most \(vol(ramp.allowed)).")
         }
 
+        /// The 10% check's stand-in for a week of the return after a longer
+        /// break (3.5 rules 2 and 4, owner's decision, #32): at most the step's
+        /// ceiling (65, 82.5 or 100% of the pre-break level, or the short week
+        /// before it if higher after a restart), and the lowest of that, the
+        /// short-break ramp's cap where the break is also a short one by weeks
+        /// (return weeks 1 to 3), and a regrowth's bound.
+        mutating func checkLongReturn(_ i: Int, _ long: LongReturn, volume v: Double, known: Bool,
+                                      regrowth g: GuardrailRegrowth.Week? = nil) {
+            let ramp = GuardrailChecker.returnRamp(i, volumes: outside, lows: outsideLows, breaks: breaks, limits: limits)
+            let grow = g.flatMap { regrowthCap(i, $0) }
+            let cap = min(long.ceiling, ramp?.allowed ?? .infinity, grow ?? .infinity)
+            guard Self.exceeds(v, cap) else {
+                return known ? () : skip(.weeklyIncrease, i, "\(unknownVolumeReason); its known part is within the return after the longer break, the rest may not be")
+            }
+            let b = long.brk
+            let off = b.longerByDays && b.length <= limits.maxShortBreakWeeks
+                ? "more than 14 days off (\(b.length == 1 ? "a week" : "\(b.length) weeks") of little or no running)"
+                : "\(b.length) weeks of little or no running"
+            let share = PlanFormatting.percent(limits.longerBreakReturnSteps[min(long.step, limits.longerBreakReturnSteps.count) - 1])
+            var why = "this is week \(long.returnWeek) back after \(off) (at most \(PlanFormatting.percent(limits.breakWeekMaxRatio)) of the pre-break \(vol(b.level)) a week), step \(long.step) of the return after a longer break, which allows at most \(share) of the pre-break volume"
+            if long.raisedToWeekRun {
+                why += ", raised to the \(vol(long.ceiling)) run in the short week before, since a restart never allows less than the week run"
+            } else if long.restarted {
+                why += " (the steps restarted because the week before was run short)"
+            }
+            var by = cap
+            if let ramp, ramp.allowed < long.ceiling, ramp.allowed <= cap {
+                why += ", and the short-break return ramp allows week \(ramp.step) at most \(vol(ramp.allowed)); the lower of the two applies"
+                by = ramp.allowed
+            }
+            if let grow, grow < by {
+                why += ", and the regrowth after a cut week allows at most \(vol(grow)); the lower applies"
+            }
+            violate(.weeklyIncrease, i, measured: v, allowed: cap, unit: unit,
+                    "volume\(outsideNote(i)) \(atLeast(known))\(vol(v))\(knownNote(known)) is above the return after a longer break: \(why), so at most \(vol(cap)) (SPEC 3.5 rules 2 and 4).")
+        }
+
         mutating func checkFourWeekIncrease(_ i: Int) {
             // Not after a pain stop of more than 14 days: the return's own
             // ceilings bound those weeks (3.5 rule 7).
@@ -831,7 +898,8 @@ public enum GuardrailChecker {
             // A cut week a regrowth follows counts at its original-plan volume
             // among the earlier 4 (3.5 rules 2 and 6), as a short break does.
             func priorVolume(_ k: Int) -> Double {
-                max(GuardrailChecker.rollingPriorVolume(k, volumes: outside, lows: outsideLows, breaks: breaks, limits: limits),
+                max(GuardrailChecker.rollingPriorVolume(k, volumes: outside, lows: outsideLows, breaks: breaks,
+                                                        plannedFrom: plannedFrom, limits: limits),
                     cutOriginals[k] ?? 0)
             }
             let prior = ((i - 7)...(i - 4)).reduce(0) { $0 + priorVolume($1) }
@@ -850,7 +918,7 @@ public enum GuardrailChecker {
                 return
             }
             let races = ((i - 7)...i).contains { raceWeeks.contains($0) } ? " Races are left out (SPEC 3.5 rule 3)." : ""
-            let breakText = substituted ? " A short break or a cut week among those 4 weeks counts at the pre-break level or the original plan (SPEC 3.5 rules 4 and 6)." : ""
+            let breakText = substituted ? " A short break, the return after a longer break or a cut week among those 4 weeks counts at the pre-break level or the original plan (SPEC 3.5 rules 4 and 6)." : ""
             violate(.fourWeekIncrease, i, measured: recent, allowed: allowed, unit: unit,
                     "the 4 weeks ending this week total \(recentKnown ? "" : "at least ")\(vol(recent)), \(PlanFormatting.percent(recent / prior - 1)) more than the 4 weeks before (\(priorKnown ? "" : "at least ")\(vol(prior))). The limit is \(PlanFormatting.percent(limits.maxFourWeekIncrease)) over any rolling 4 weeks, so at most \(vol(allowed)).\(breakText)\(races)")
         }
@@ -919,6 +987,15 @@ public enum GuardrailChecker {
         mutating func checkQualitySessions(_ i: Int) {
             let count = weeks[i].workouts.filter { $0.kind.isQuality || (limits.racesCountAsQuality && $0.kind == .race) }.count
             let races = limits.racesCountAsQuality ? " (races count as quality sessions)" : ""
+            // Weeks 1 and 2 back after a longer break hold fewer too, by return
+            // week, whatever the step (3.5 rule 4, owner's decision, #32).
+            if let long = GuardrailChecker.longReturn(i, volumes: outside, lows: outsideLows, breaks: breaks,
+                                                      plannedFrom: plannedFrom, limits: limits),
+               let allowed = limits.returnRampMaxQuality(step: long.returnWeek), count > allowed {
+                let limit = allowed == 0 ? "no quality sessions" : allowed == 1 ? "at most 1 quality session" : "at most \(allowed) quality sessions"
+                return violate(.qualitySessions, i, measured: Double(count), allowed: Double(allowed), unit: .sessions,
+                               "\(count) quality sessions are planned\(races) in week \(long.returnWeek) back after a longer break. The return (SPEC 3.5 rule 4) allows \(limit) in that week.")
+            }
             // Weeks 1 and 2 back after a short break hold fewer (3.5 rule 4).
             if let ramp = GuardrailChecker.returnRamp(i, volumes: outside, lows: outsideLows, breaks: breaks, limits: limits),
                let allowed = limits.returnRampMaxQuality(step: ramp.step) {
