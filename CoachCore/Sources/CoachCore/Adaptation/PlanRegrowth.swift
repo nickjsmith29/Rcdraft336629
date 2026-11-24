@@ -275,6 +275,10 @@ extension AdaptationEngine.Work {
         // is in the regrowth; the weeks before count as cut weeks.
         var forced: Date?
         var weekRise: Double? = rise
+        // After a stop of more than 14 days: the weeks from the stop's week
+        // through the end of the return count at the pre-stop level in the
+        // rolling check (3.5 rule 7, 0.8, #93): the level and the last week.
+        var atLevel: (level: Double, from: Date, through: Date)?
         var out = GuardrailRegrowth()
         if let r = state.painRecovery.painReturn {
             guard let off = r.daysOff, off >= 0 else { return .none }
@@ -283,7 +287,8 @@ extension AdaptationEngine.Work {
             guard let lastRun, days(from: calendar.startOfDay(for: lastRun), to: today) - 1 <= maxOff else { return .none }
             let startWeek = weekOf(r.start)
             let first = calendar.startOfDay(for: r.start) == startWeek ? startWeek : shift(startWeek, weeks: 1)
-            var w = min(r.planWeeks.map(\.week).min() ?? startWeek, startWeek)
+            let stopWeek = min(r.planWeeks.map(\.week).min() ?? startWeek, startWeek)
+            var w = stopWeek
             while w < first {
                 if let o = originalVolume(w), o > 0 { out.cutWeeks.append(.init(weekStart: w, original: o)) }
                 w = shift(w, weeks: 1)
@@ -291,7 +296,12 @@ extension AdaptationEngine.Work {
             forced = first
             // After more than 14 days off, the return's own ceilings and the
             // spike rule bound the weeks back, not a weekly rise (#107).
-            if off > maxOff { weekRise = nil }
+            if off > maxOff {
+                weekRise = nil
+                if let level = r.level, level > 0, level.isFinite {
+                    atLevel = (level, stopWeek, max(first, r.planVolumeWeek(timeZone: tz, limits: recoveryLimits)))
+                }
+            }
         }
 
         let firstWeek = min(forced ?? .distantFuture,
@@ -360,6 +370,17 @@ extension AdaptationEngine.Work {
             // Ahead, a regrowth stays on to the end of the plan: a week at plan
             // has the plan as its bound, and the plain 10% check never takes
             // over below plan.
+        }
+        // The stop's weeks and the return's, up to the week at plan volume,
+        // count at the pre-stop level, not the original plan (3.5 rule 7).
+        // The snapshot keeps them for the windows that still hold them.
+        if let a = atLevel {
+            var w = a.from
+            while w <= a.through {
+                out.cutWeeks.removeAll { $0.weekStart == w }
+                out.cutWeeks.append(.init(weekStart: w, original: a.level))
+                w = shift(w, weeks: 1)
+            }
         }
         // Cut weeks read before, still in the snapshot's window: the rolling
         // check keeps counting them at the original plan.

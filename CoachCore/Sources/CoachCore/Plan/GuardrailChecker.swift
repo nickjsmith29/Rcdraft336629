@@ -925,10 +925,16 @@ public enum GuardrailChecker {
             func low(_ k: Int) -> Double { outside[k] ?? outsideLows[k] }
             // A cut week a regrowth follows counts at its original-plan volume
             // among the earlier 4 (3.5 rules 2 and 6), as a short break does.
+            // The return after a longer break or a pain stop of more than 14
+            // days (3.5 rules 4 and 7) is read at each week's own time, as
+            // `breaks` are: the weeks it counts at the pre-break or pre-stop
+            // level, and whether a return week was run short, never go by a
+            // week's time before a cap (#54, #93). A plain week still counts
+            // at its time before the cap, as the rolling check reads it.
             func priorVolume(_ k: Int) -> Double {
-                max(GuardrailChecker.rollingPriorVolume(k, volumes: outside, lows: outsideLows, breaks: breaks,
+                max(GuardrailChecker.rollingPriorVolume(k, volumes: ownOutside, lows: ownOutsideLows, breaks: breaks,
                                                         plannedFrom: plannedFrom, limits: limits),
-                    cutOriginals[k] ?? 0)
+                    low(k), cutOriginals[k] ?? 0)
             }
             let prior = ((i - 7)...(i - 4)).reduce(0) { $0 + priorVolume($1) }
             let recent = ((i - 3)...i).reduce(0) { $0 + low($1) }

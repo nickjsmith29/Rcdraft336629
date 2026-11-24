@@ -12,6 +12,14 @@ import Foundation
 // follow the recurrence rule; outside those, pain that got worse during a run
 // stops running. The next-morning trigger, a movement change and a red flag
 // always stop at once (in the return they reopen the stop).
+//
+// The restart (SPEC 3.5 rule 7, 0.8, owner-approved Nov 24, #93): after a
+// stop of more than 14 days, a return week run under 1 / (1 + 20%) (about
+// 83%) of what it was planned to hold sets the next week back to step 1, its
+// ceiling never below the week actually run, as after a longer break (rule 4).
+// `judgeReturnWeeks` reads each finished return week once, at the week's own
+// time (never the time before an easy-run cap, #54), and keeps the result in
+// `PainReturn` (`restartWeek`, `restartFloor`, `judgedThrough`).
 
 /// What rule 7 told the app during one event (see `PainCourseStatus`).
 struct PainEventNotes: Equatable, Sendable {
@@ -65,6 +73,7 @@ extension AdaptationEngine.Work {
     /// A run matched to the test run marks the test as run.
     mutating func rule7Run(_ a: Activity, matched: PlannedWorkout?) {
         adoptStoredStop()
+        judgeReturnWeeks(asOf: a.start)
         guard var t = state.painRecovery.test, t.activityID == nil, let m = matched, m.id == t.workoutID else { return }
         t.activityID = a.id
         t.ranAt = a.start
@@ -76,11 +85,12 @@ extension AdaptationEngine.Work {
     mutating func rule7CheckIn(_ c: PainCheckIn) {
         adoptStoredStop()
         guard PainCheckIn.validScores.contains(c.score), c.date.timeIntervalSinceReferenceDate.isFinite else { return }
+        judgeReturnWeeks(asOf: c.date)
         let u = usualPain()
         recordStableSample(date: c.date, score: c.score)
         if let r = state.painRecovery.painReturn,
            PainReturnRule.symptoms(level: c.score, changedMovement: false,
-                                   step: r.step(atWeek: weekOf(c.date), timeZone: tz, limits: recoveryLimits),
+                                   step: r.symptomStep(atWeek: weekOf(c.date), timeZone: tz, limits: recoveryLimits),
                                    usual: u, limits: recoveryLimits) {
             recurrence(at: c.date, level: c.score, sourceID: nil, usual: u)
         }
@@ -94,6 +104,7 @@ extension AdaptationEngine.Work {
     /// reopens a stop, and keeps the clinician flag's count.
     mutating func rule7Report(_ report: PainReport) {
         adoptStoredStop()
+        judgeReturnWeeks(asOf: report.date)
         let u = usualPain()
         let hours = hoursSinceRun(report)
         var fired = report.stopTriggers(usual: u, hoursSinceRun: hours, limits: recoveryLimits)
@@ -119,7 +130,7 @@ extension AdaptationEngine.Work {
             // During the return, symptoms on a run follow the recurrence rule.
             fired.removeAll { $0 == .worsenedDuringRun }
             item = report.isAbove(usual: u) || !fired.isEmpty ? .above : .atOrBelow
-            let step = r.step(atWeek: weekOf(report.date), timeZone: tz, limits: recoveryLimits)
+            let step = r.symptomStep(atWeek: weekOf(report.date), timeZone: tz, limits: recoveryLimits)
             if fired.isEmpty, PainReturnRule.symptoms(level: report.painLevel, changedMovement: report.changedMovement,
                                                       step: step, usual: u, limits: recoveryLimits) {
                 recurrence(at: report.date, level: report.painLevel, sourceID: report.activityID, usual: u)
@@ -465,7 +476,8 @@ extension AdaptationEngine.Work {
     }
 
     /// Weekly ceilings of the return (rule 7's week 1, then the lower of rule
-    /// 6's regrowth and rule 4's ramp) as volume holds, one per plan week
+    /// 6's regrowth and rule 4's ramp; after a restart, step 1 again with the
+    /// week run as its floor) as volume holds, one per plan week
     /// from the return's start until a step at full plan volume. The week the
     /// return starts in, when it starts after that week's first day, allows
     /// what was already run before the return plus the step's ceiling for
@@ -482,6 +494,8 @@ extension AdaptationEngine.Work {
             guard let f = PainReturnRule.ceilingFraction(step: r.step(atWeek: week, timeZone: tz, limits: recoveryLimits),
                                                          daysOff: r.daysOff, limits: recoveryLimits) else { continue }
             var ceiling = level * f
+            // A restarted week (SPEC 3.5 rule 7, #93): never below the week actually run.
+            if let floor = r.restartFloor(forWeek: week), floor.isFinite { ceiling = max(ceiling, floor) }
             if startDay > week {
                 let left = Double(max(0, 7 - days(from: week, to: startDay))) / 7
                 let done = history.filter { $0.date < startDay && weekOf($0.date) == week }
@@ -523,8 +537,11 @@ extension AdaptationEngine.Work {
             }
         }
         let startDay = calendar.startOfDay(for: r.start)
+        // A restart sets the weekly ceilings back, not week 1's guards: its step-1 week
+        // is left out (they come back only through the recurrence rule, #93).
         func inWeek1(_ d: Date) -> Bool {
-            d >= startDay && r.step(atWeek: weekOf(d), timeZone: tz, limits: recoveryLimits) <= 1
+            d >= startDay && weekOf(d) != r.restartWeek
+                && r.step(atWeek: weekOf(d), timeZone: tz, limits: recoveryLimits) <= 1
         }
         // Week 1's long run: at most `week1Fraction` of the pre-stop long run,
         // even after a short stop, where rule 4 itself has no ramp. The run on
@@ -660,6 +677,7 @@ extension AdaptationEngine.Work {
             if walking || newPain { raiseFlag(.staysStopped, at: asOf) }
         }
         manageTestRun(asOf: asOf, usual: u)
+        judgeReturnWeeks(asOf: asOf)
         if var r = state.painRecovery.painReturn {
             if let rd = r.restDay, addDays(1, to: rd) <= asOf { r.restDay = nil; state.painRecovery.painReturn = r }
             let full = r.planVolumeWeek(timeZone: tz, limits: recoveryLimits)
@@ -793,6 +811,100 @@ extension AdaptationEngine.Work {
         return speeds[speeds.count / 2]
     }
 
+    // MARK: The restart after a week run short (SPEC 3.5 rule 7, #93)
+
+    /// True when the return restarts after a week run short: only after a
+    /// stop of more than `rampDaysOff.upperBound` (14) days off, with a known
+    /// level. After a shorter stop each week is in rule 6's regrowth, which
+    /// has its own restart (`growthWeeks`).
+    func restartApplies(_ r: PainReturn) -> Bool {
+        guard let off = r.daysOff, off > recoveryLimits.rampDaysOff.upperBound,
+              let level = r.level, level > 0, level.isFinite else { return false }
+        return true
+    }
+
+    /// The first full week of the return: the week it starts in when it
+    /// starts on that week's first day, else the week after.
+    func firstFullWeek(_ r: PainReturn) -> Date {
+        let week = weekOf(r.start)
+        return calendar.startOfDay(for: r.start) == week ? week : shift(week, weeks: 1)
+    }
+
+    /// What return week `week` was planned to hold, outside races: the volume
+    /// the engine returned for it at its first event (`PlanSnapshot.planned`);
+    /// a week run before the plan existed counts as planned at its step's
+    /// ceiling (the pre-stop plan's volume at full plan volume), as after a
+    /// longer break (rule 4). Nil when neither is known.
+    func plannedReturnWeek(_ r: PainReturn, week: Date) -> Double? {
+        if let p = plannedVolume(week), p.isFinite { return p }
+        guard let level = r.level else { return nil }
+        let step = r.step(atWeek: week, timeZone: tz, limits: recoveryLimits)
+        guard let f = PainReturnRule.ceilingFraction(step: step, daysOff: r.daysOff, limits: recoveryLimits) else {
+            return r.reference(forWeek: week)
+        }
+        return max(level * f, r.restartFloor(forWeek: week) ?? 0)
+    }
+
+    /// Reads each finished return week once (SPEC 3.5 rule 7, 0.8, #93): a
+    /// week run under 1 / (1 + 20%) of what it was planned to hold
+    /// (`GuardrailChecker.isShortReturnWeek`, the reading of rule 4) sets the
+    /// next week back to step 1, its ceiling the step's share of the pre-stop
+    /// level or the volume of the short week if that is higher, so it is
+    /// never below the week run. The week's own time is read, never its time
+    /// before an easy-run cap (#54).
+    ///
+    /// A week that is also a recurrence week (symptoms came back in it, which
+    /// set the step back one) takes the lower of the step back and the
+    /// restart: the restart only replaces the step back when its ceiling is
+    /// lower. A second failure at the same step still reopens the stop
+    /// (`recurrence`). The restart sets the weekly ceilings back only: week 1's
+    /// alternate days and long-run cap return only through the recurrence
+    /// rule (`enforceReturn`). Heuristic, owner-approved Nov 24.
+    mutating func judgeReturnWeeks(asOf: Date) {
+        guard var r = state.painRecovery.painReturn, restartApplies(r), let level = r.level else { return }
+        let current = weekOf(asOf)
+        var week = r.judgedThrough.map { shift($0, weeks: 1) } ?? firstFullWeek(r)
+        guard week < current else { return }
+        let measure = context.guardrails.measure
+        let limits = context.guardrails
+        let rise = limits.regrowthMaxWeeklyRise.isFinite ? max(0, limits.regrowthMaxWeeklyRise) : 0
+        let first = PainReturnRule.ceilingFraction(step: 1, daysOff: r.daysOff, limits: recoveryLimits) ?? 1
+        var posted: [PlanChange] = []
+        while week < current {
+            let judged = week
+            week = shift(week, weeks: 1)
+            let next = week
+            defer { r.judgedThrough = judged }
+            guard let planned = plannedReturnWeek(r, week: judged) else { continue }
+            let ran = runVolume(inWeek: judged, history)
+            guard ran.isFinite, GuardrailChecker.isShortReturnWeek(ran: ran, planned: planned, limits: limits) else { continue }
+            let restart = max(level * first, ran)
+            // The step back a recurrence in this week set, or the step on: whichever the state holds for the next week.
+            if let f = PainReturnRule.ceilingFraction(step: r.step(atWeek: next, timeZone: tz, limits: recoveryLimits),
+                                                      daysOff: r.daysOff, limits: recoveryLimits) {
+                let back = level * f
+                if restart >= back - 1e-9 * max(1, back) { continue }
+            }
+            r.step = 1
+            r.stepWeek = next
+            r.restartWeek = next
+            r.restartFloor = ran
+            let units = context.units
+            let fmt = { (v: Double) in PlanFormatting.volume(v, measure, units: units) }
+            let raised = ran > level * first
+            posted.append(PlanChange(
+                kind: .painReturnStep, workoutIDs: [],
+                triggers: [stepTrigger(r, at: next),
+                           TriggerMetric(metric: .weeklyVolume, value: ran, expectedLow: planned / (1 + rise),
+                                         unit: measure == .distance ? .meters : .seconds,
+                                         detail: "run in the week of \(day(judged)) of the \(fmt(planned)) it was planned to hold, under \(PlanFormatting.percent(1 / (1 + rise)))")],
+                rule: Self.stopRule,
+                explanation: "In the week of \(day(judged)) you ran \(fmt(ran)) of the \(fmt(planned)) the return planned, under about \(PlanFormatting.percent(1 / (1 + rise))) of it, so the return restarts: the week of \(day(next)) is step 1 again, at most \(fmt(restart)) (\(PlanFormatting.percent(first)) of your level before the stop\(raised ? ", or the week you ran, which is more" : "")), then \(PlanFormatting.percent(PainReturnRule.ceilingFraction(step: 2, daysOff: r.daysOff, limits: recoveryLimits) ?? 1)) and the full plan follow. Week 1's alternate days and long-run cap come back only if symptoms do. This is a training adjustment, not a diagnosis. (Heuristic, SPEC 3.5 rule 7, owner decision Nov 24, #93.)"))
+        }
+        state.painRecovery.painReturn = r
+        changes += posted
+    }
+
     /// The return is over: a full week at plan volume with no symptoms.
     /// Volume of the runs in `week` (guardrail measure, races and rest left out).
     func runVolume(inWeek week: Date, _ sessions: [PlannedWorkout]) -> Double {
@@ -822,10 +934,12 @@ extension AdaptationEngine.Work {
         let reports = state.painReports.filter { $0.isValid && $0.date >= week && $0.date < end }
         let symptom = reports.first { $0.isAbove(usual: u) || $0.changedMovement || !$0.redFlags.isEmpty }?.date
             ?? state.painCheckIns.first { $0.date >= week && $0.date < end && PainCheckIn.validScores.contains($0.score) && $0.score > u }?.date
-        guard short || symptom != nil else { return finishReturn(r, at: asOf) }
+        guard short || symptom != nil else { return finishReturn(r, at: asOf, lastWeek: week) }
         var next = r
         next.step = PainReturnRule.planVolumeStep(recoveryLimits)
         next.stepWeek = max(end, weekOf(asOf))
+        next.restartWeek = nil
+        next.restartFloor = nil
         state.painRecovery.painReturn = next
         let measure = context.guardrails.measure
         let why = symptom.map { "pain went above your usual \(u)/10 or your movement changed on \(day($0))" }
@@ -840,8 +954,21 @@ extension AdaptationEngine.Work {
             explanation: "Your return after the pain stop isn't complete yet: in the week of \(day(week)) \(why). Quality sessions come back only after a full week at plan volume with no symptoms, so the week at plan volume repeats from \(day(next.stepWeek)). (Heuristic, SPEC 3.5 rule 7.)"))
     }
 
-    mutating func finishReturn(_ r: PainReturn, at asOf: Date) {
+    mutating func finishReturn(_ r: PainReturn, at asOf: Date, lastWeek: Date) {
         state.painRecovery.painReturn = nil
+        // After a stop of more than 14 days, the weeks from the stop's week
+        // through the return's last week count at the pre-stop level in the
+        // rolling 4-week check while they are among the 4 earlier weeks; the
+        // snapshot keeps them from here on (3.5 rule 7, #93).
+        if restartApplies(r), let level = r.level {
+            var cut = Dictionary(state.planSnapshot.cut.map { ($0.week, $0.volume) }, uniquingKeysWith: { a, _ in a })
+            var w = min(r.planWeeks.map(\.week).min() ?? weekOf(r.start), weekOf(r.start))
+            while w <= lastWeek {
+                cut[w] = level
+                w = shift(w, weeks: 1)
+            }
+            state.planSnapshot.cut = cut.keys.sorted().map { PlanWeekVolume(week: $0, volume: cut[$0]!) }
+        }
         changes.append(PlanChange(
             kind: .painReturnStep, workoutIDs: [], triggers: [stepTrigger(r, at: asOf)], rule: Self.stopRule,
             explanation: "Your return after the pain stop is complete: a full week at plan volume with no symptoms. Quality sessions can come back in the plan from now. (Heuristic, SPEC 3.5 rule 7.)"))

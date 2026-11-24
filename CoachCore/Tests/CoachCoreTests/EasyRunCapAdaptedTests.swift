@@ -483,7 +483,7 @@ final class EasyRunCapAdaptedTests: XCTestCase {
         let back = try JSONDecoder().decode(AdaptationState.self, from: data)
         XCTAssertEqual(back, o.state)
         XCTAssertEqual(back.preCap.weeks.count, 1)
-        XCTAssertEqual(AdaptationState.formatVersion, 5)
+        XCTAssertEqual(AdaptationState.formatVersion, 6)
     }
 
     func testAStateFromANewerFormatIsStillRefused() {
