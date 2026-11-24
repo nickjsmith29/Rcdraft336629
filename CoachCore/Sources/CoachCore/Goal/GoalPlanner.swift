@@ -192,7 +192,7 @@ public enum GoalPlanner {
         case .plan(let plan):
             // With a freeze held, the rest of the current week as the old plan keeps it is how that
             // week ends, which the first frozen week is measured against (`FreezeHold.carried`).
-            let carried = built.summary == nil ? [] : freeze?.carried(
+            let carried = built.summary?.frozenWeekStarts.isEmpty != false ? [] : freeze?.carried(
                 from: today, before: plan.weeks.first?.weekStart ?? today,
                 trainingDays: settings.schedule.trainingDays, timeZone: baseline.timeZone) ?? []
             let report = GuardrailChecker.check(history: history + carried, planned: plan.workouts,
@@ -279,7 +279,7 @@ public enum GoalPlanner {
                                                         timeZone: tz, limits: limits, freezes: allFreezes)
                     // Under a freeze edit they stay: the plan was checked with them as the end of this week
                     // (`plan`), and without them the frozen week would grow past the week before it.
-                    if report.passed || p.freezeEdit != nil {
+                    if report.passed || p.freezeEdit?.frozenWeekStarts.isEmpty == false {
                         kept = onDays
                         lines.append("\(count(onDays.count)) left this week from the previous plan stay as planned.")
                     } else {

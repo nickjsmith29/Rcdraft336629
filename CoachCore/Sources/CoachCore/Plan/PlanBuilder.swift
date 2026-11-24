@@ -367,6 +367,7 @@ public enum PlanBuilder {
         builder.diagnose = diagnose
         builder.shortenWarmUps = shortenWarmUps
         builder.firstWeekCap = firstWeekCap
+        builder.heldWeeks = heldWeeks
         // An open start week with a session of unknown time (#40) is only known
         // to hold what was logged so far, which can leave no workable first
         // week. Once it is over, all of its other runs count: build then.
@@ -381,6 +382,7 @@ public enum PlanBuilder {
             narrow.diagnose = diagnose
             narrow.shortenWarmUps = shortenWarmUps
             narrow.firstWeekCap = firstWeekCap
+            narrow.heldWeeks = heldWeeks
             let narrowResult = narrow.run()
             if narrowResult.plan != nil { builder = narrow; result = narrowResult }
         }
@@ -1208,6 +1210,9 @@ private struct Builder {
     /// freeze holds, measured from the last of them (`FreezeHold`, 3.5 rule 7,
     /// #72). Infinite for every other plan.
     var firstWeekCap = Double.infinity
+    /// Weeks held by a pain freeze before this plan's first week (#72). Their sessions are in `history`, but they are
+    /// the freeze's smaller weeks, not the runner's own level, so the baseline-against-history check skips them.
+    var heldWeeks = 0
 
     init(input: PlanInput, v: PlanBuilder.Validated, timeZone: TimeZone, limits: GuardrailLimits, history: [PlannedWorkout],
          wideDays: Bool = true) {
@@ -1800,7 +1805,7 @@ private struct Builder {
         let raceWeek = n - 1
         let anchor = H.taperWeeks(c) == 1 ? raceWeek : raceWeek - 1
 
-        if let mean = historyMean, v.recentWeekly > max(1.5 * mean, mean + 3600) {
+        if heldWeeks == 0, let mean = historyMean, v.recentWeekly > max(1.5 * mean, mean + 3600) {
             return .cannotBuild([.recentVolumeDisagreesWithHistory(recentWeeklySeconds: v.recentWeekly, historyWeeklySeconds: mean)])
         }
         if ledger.openWithoutReference {

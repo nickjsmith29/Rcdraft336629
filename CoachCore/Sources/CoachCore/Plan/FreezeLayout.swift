@@ -43,6 +43,8 @@ enum FreezeLayout {
         /// only when the edit lowered the week before, say by dropping its
         /// sessions on days the runner no longer trains.
         let ceiling: Double?
+        /// Day offsets outside the week (-1: the Sunday before, 7: the Monday after) that hold a quality session.
+        var hardOutside: Set<Int> = []
     }
 
     struct Outcome {
@@ -99,7 +101,7 @@ enum FreezeLayout {
             days.min { abs($0 - origin) != abs($1 - origin) ? abs($0 - origin) < abs($1 - origin) : $0 < $1 }
         }
         func apart(_ day: Int) -> Bool {
-            ![day - 1, day + 1].contains { $0 == raceIdx || placed[$0]?.kind.isQuality == true }
+            ![day - 1, day + 1].contains { $0 == raceIdx || placed[$0]?.kind.isQuality == true || ctx.hardOutside.contains($0) }
         }
         func shifted(_ w: PlannedWorkout, to day: Int) -> PlannedWorkout {
             var moved = w
@@ -133,10 +135,18 @@ enum FreezeLayout {
                 target = nearest(free, to: origin)
             }
             if target == nil, w.kind == .long || w.kind.isQuality {
-                // Give way: the shortest easy run's day (that run is dropped).
-                let victim = placed.filter { $0.value.kind == .easy || $0.value.kind == .recovery }
-                    .min { seconds($0.value) != seconds($1.value) ? seconds($0.value) < seconds($1.value) : $0.key < $1.key }
-                if let v = victim { placed[v.key] = nil; target = v.key }
+                // Give way: the shortest easy run's day (that run is dropped); a quality session only on a day
+                // apart from the other hard days (F4), else it turns easy at the same length and gives way.
+                func victim(apartOnly: Bool) -> Int? {
+                    placed.filter { ($0.value.kind == .easy || $0.value.kind == .recovery) && (!apartOnly || apart($0.key)) }
+                        .min { seconds($0.value) != seconds($1.value) ? seconds($0.value) < seconds($1.value) : $0.key < $1.key }?.key
+                }
+                var day = victim(apartOnly: w.kind.isQuality)
+                if day == nil, w.kind.isQuality {
+                    w = w.swappedToEasyKeepingTarget(reason: "it can't go on your new days without a hard day next to it, and your pain freeze holds this week (SPEC 3.5 rule 7).")
+                    day = victim(apartOnly: false)
+                }
+                if let d = day { placed[d] = nil; target = d }
             }
             if let t = target { placed[t] = shifted(w, to: t) }
         }
@@ -151,13 +161,25 @@ enum FreezeLayout {
         let budget = ctx.race.map { max(0, limit - seconds($0)) } ?? limit
         list = shrink(list, to: budget)
 
-        // A week laid out again keeps the long run's share (3.5 rule 5).
+        // A week laid out again keeps the long run's share (3.5 rule 5), and no easy or recovery run is longer
+        // than the week's long run (F3, 3.5 rule 5, #54): the long run is cut to its share, the easy runs cut to
+        // the long run, the cut time dropped (never shared out), until both hold. Each pass only shortens.
         let share = ctx.limits.maxLongRunShare
-        if share > 0, share < 1, let l = list.firstIndex(where: { $0.kind == .long }) {
-            let total = list.reduce(0.0) { $0 + seconds($1) }
-            let rest = total - seconds(list[l])
-            if rest > 0, seconds(list[l]) > share * total + 0.5 {
-                list[l] = scaled(list[l], to: share * rest / (1 - share), why: "the long run stays within its share of the week")
+        if let l = list.firstIndex(where: { $0.kind == .long }) {
+            for _ in 0..<50 {
+                var changed = false
+                let total = list.reduce(0.0) { $0 + seconds($1) }
+                let rest = total - seconds(list[l])
+                if share > 0, share < 1, rest > 0, seconds(list[l]) > share * total * (1 + 1e-9) {
+                    list[l] = scaled(list[l], to: share * rest / (1 - share) * (1 - 1e-9), why: "the long run stays within its share of the week")
+                    changed = true
+                }
+                let longSeconds = seconds(list[l])
+                for i in list.indices where (list[i].kind == .easy || list[i].kind == .recovery) && seconds(list[i]) > longSeconds {
+                    list[i] = scaled(list[i], to: longSeconds, why: "an easy run stays within the long run")
+                    changed = true
+                }
+                if !changed { break }
             }
         }
 

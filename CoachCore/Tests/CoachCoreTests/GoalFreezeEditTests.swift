@@ -151,16 +151,17 @@ final class GoalFreezeEditTests: XCTestCase {
         let s = GoalFixture.settings(weeksAhead: 14, maxSession: .seconds(40 * 60), pain: .recurring(areas: ["shin"]))
         let p = try built(edit(s, hold: hold))
         assertPasses(p, freezes: [long])
-        // The first week had nothing over 40 minutes: unchanged. The second keeps its sessions, the long easy run cut to 40.
+        // The first week had nothing over 40 minutes: unchanged. The second keeps its sessions, the long easy run cut to 40
+        // and then to the week's 35-minute long run (no easy run is longer than it, F3), the cut time dropped.
         XCTAssertEqual(p.plan.weeks[0].workouts, FreezeFixture.frozenWeek)
         let week = p.plan.weeks[1]
         let cut = try XCTUnwrap(week.workouts.first { $0.id == "old-w2-thu" })
-        XCTAssertEqual(cut.durationSeconds, 40 * 60)
+        XCTAssertEqual(cut.durationSeconds, 35 * 60)
         XCTAssertEqual(cut.kind, .easy)
         // Every segment in proportion: still all easy, summing to the new length.
-        XCTAssertEqual(cut.prescription?.durationSeconds ?? 0, 40 * 60, accuracy: 0.001)
-        XCTAssertEqual(cut.prescription?.easySeconds ?? 0, 40 * 60, accuracy: 0.001)
-        XCTAssertEqual(week.trainingSeconds, (20 + 40 + 20 + 35) * 60, "less than the frozen 120 minutes, never more")
+        XCTAssertEqual(cut.prescription?.durationSeconds ?? 0, 35 * 60, accuracy: 0.001)
+        XCTAssertEqual(cut.prescription?.easySeconds ?? 0, 35 * 60, accuracy: 0.001)
+        XCTAssertEqual(week.trainingSeconds, (20 + 35 + 20 + 35) * 60, "less than the frozen 120 minutes, never more")
         XCTAssertEqual(week.workouts.filter { $0.id != "old-w2-thu" }, second.filter { $0.id != "old-w2-thu" })
         XCTAssertEqual(p.freezeEdit?.relaidWeekStarts, [FreezeFixture.monday(week: 2)])
     }
@@ -197,6 +198,134 @@ final class GoalFreezeEditTests: XCTestCase {
         let again = GuardrailChecker.check(history: p.history + [FreezeFixture.currentWeekRest[2]], planned: p.plan.workouts,
                                            timeZone: tz, freezes: [freeze])
         XCTAssertTrue(again.passed, "\(again.violations)")
+    }
+
+    func twoWeekFreeze(_ second: [PlannedWorkout], first: [PlannedWorkout] = FreezeFixture.frozenWeek) -> FreezeHold {
+        let long = DateInterval(start: freeze.start, end: FreezeFixture.at(week: 2, day: .tuesday))
+        return FreezeHold(freezes: [long], sessions: FreezeFixture.currentWeekRest + first + second)
+    }
+
+    /// Reviewer round 2, blocker 1: a quality session that finds no free day apart from the other hard days turns
+    /// easy at its length, and never gives way onto a day next to another quality session (F4).
+    func testAQualitySessionThatCannotBePlacedApartTurnsEasyInsteadOfStackingNextToAnother() throws {
+        let second = [FreezeFixture.session("old-w2-tue", week: 2, .tuesday, .easy, minutes: 15),
+                      FreezeFixture.session("old-w2-wed", week: 2, .wednesday, .quality(.threshold), minutes: 25),
+                      FreezeFixture.session("old-w2-thu", week: 2, .thursday, .easy, minutes: 15),
+                      FreezeFixture.session("old-w2-fri", week: 2, .friday, .quality(.fartlek), minutes: 25),
+                      FreezeFixture.session("old-w2-sun", week: 2, .sunday, .long, minutes: 40)]
+        let days: Set<PlanWeekday> = [.tuesday, .wednesday, .thursday, .sunday]
+        let s = GoalFixture.settings(weeksAhead: 14, days: days, pain: .recurring(areas: ["shin"]))
+        let hold = twoWeekFreeze(second)
+        let p = try built(edit(s, hold: hold))
+        assertPasses(p, freezes: hold.freezes)
+        let week = p.plan.weeks[1]
+        let quality = week.workouts.filter { $0.kind.isQuality }
+        XCTAssertEqual(quality.map(\.id), ["old-w2-wed"], "the threshold stays; the fartlek can't sit next to it")
+        let fartlek = try XCTUnwrap(week.workouts.first { $0.id == "old-w2-fri" })
+        XCTAssertEqual(fartlek.kind, .easy)
+        XCTAssertEqual(fartlek.durationSeconds, 25 * 60, "same length")
+        XCTAssertTrue(week.workouts.allSatisfy { days.contains(PlanWeekday(of: $0.date, timeZone: tz)) })
+        XCTAssertLessThanOrEqual(week.trainingSeconds, 120 * 60 + 0.5)
+        // No two hard days in a row, long run included as far as the builder counts them.
+        let hardDays = quality.map { PlanWeekday(of: $0.date, timeZone: tz).rawValue }
+        XCTAssertTrue(zip(hardDays, hardDays.dropFirst()).allSatisfy { $1 - $0 > 1 })
+    }
+
+    func layoutContext(days: Set<PlanWeekday>, hardOutside: Set<Int>) -> FreezeLayout.Context {
+        let input = PlanInput(raceDistanceMeters: 21_097.5, raceDate: FreezeFixture.at(week: 14, day: .sunday),
+                              startDate: today, trainingDays: days, longRunDay: .sunday, recentWeeklySeconds: 6000,
+                              heartRateZones: nil)
+        return FreezeLayout.Context(input: input, limits: .default, timeZone: tz, moveLongRun: false, race: nil, ceiling: nil,
+                                    hardOutside: hardOutside)
+    }
+
+    func testALaidOutQualitySessionKeepsOffTheSundayBeforeAndTheMondayAfterTheWeek() {
+        let week = FreezeFixture.monday(week: 1)
+        func held(_ id: String, _ day: PlanWeekday, _ kind: PlannedWorkout.Kind) -> PlannedWorkout {
+            FreezeFixture.session(id, week: 1, day, kind, minutes: 30)
+        }
+        // Tuesday is not a training day; Monday is the only free day.
+        let before = [held("e1", .wednesday, .easy), held("e2", .saturday, .easy), held("l", .sunday, .long), held("q", .tuesday, .quality(.threshold))]
+        let monday: Set<PlanWeekday> = [.monday, .wednesday, .saturday, .sunday]
+        let free = FreezeLayout.lay(held: before, weekStart: week, layoutContext(days: monday, hardOutside: []))
+        XCTAssertEqual(free.workouts.first { $0.id == "q" }?.kind, .quality(.threshold))
+        XCTAssertEqual(free.workouts.first { $0.id == "q" }?.date, FreezeFixture.at(week: 1, day: .monday))
+        let hard = FreezeLayout.lay(held: before, weekStart: week, layoutContext(days: monday, hardOutside: [-1]))
+        XCTAssertEqual(hard.workouts.first { $0.id == "q" }?.kind, .easy, "the Sunday before is a hard day")
+        XCTAssertEqual(hard.workouts.first { $0.id == "q" }?.durationSeconds, 30 * 60)
+        // Sunday is the only free day, and the Monday after is hard.
+        let after = [held("e1", .monday, .easy), held("e2", .wednesday, .easy), held("e3", .thursday, .easy), held("q", .tuesday, .quality(.threshold))]
+        let sunday: Set<PlanWeekday> = [.monday, .wednesday, .thursday, .sunday]
+        let open = FreezeLayout.lay(held: after, weekStart: week, layoutContext(days: sunday, hardOutside: []))
+        XCTAssertEqual(open.workouts.first { $0.id == "q" }?.date, FreezeFixture.at(week: 1, day: .sunday))
+        XCTAssertTrue(open.workouts.first { $0.id == "q" }?.kind.isQuality == true)
+        let closed = FreezeLayout.lay(held: after, weekStart: week, layoutContext(days: sunday, hardOutside: [7]))
+        XCTAssertEqual(closed.workouts.first { $0.id == "q" }?.kind, .easy, "the Monday after is a hard day")
+    }
+
+    /// Blocker 2: the baseline is not compared with the weeks the freeze made smaller.
+    func testAThreeDayWeekEditedOverATwoWeekFreezeBuilds() throws {
+        let old = GoalFixture.settings(weeksAhead: 14, days: [.monday, .wednesday, .saturday], longRunDay: .saturday,
+                                       pain: .recurring(areas: ["shin"]))
+        func week(_ n: Int) -> [PlannedWorkout] {
+            [FreezeFixture.session("old-w\(n)-mon", week: n, .monday, .easy, minutes: 30),
+             FreezeFixture.session("old-w\(n)-wed", week: n, .wednesday, .easy, minutes: 30),
+             FreezeFixture.session("old-w\(n)-sat", week: n, .saturday, .long, minutes: 40)]
+        }
+        let hold = FreezeHold(freezes: [DateInterval(start: freeze.start, end: FreezeFixture.at(week: 2, day: .tuesday))],
+                              sessions: FreezeFixture.currentWeekRest + week(1) + week(2))
+        for days: Set<PlanWeekday> in [[.tuesday, .thursday, .sunday], [.monday, .wednesday, .sunday]] {
+            let s = GoalFixture.settings(weeksAhead: 14, days: days, longRunDay: .sunday, pain: .recurring(areas: ["shin"]))
+            let r = GoalPlanner.replan(from: old, previousPlan: nil, to: s, baseline: report, today: today, freeze: hold)
+            let p = try built(r)
+            XCTAssertEqual(p.freezeEdit?.frozenWeekStarts.count, 2)
+            XCTAssertTrue(p.plan.weeks.prefix(2).allSatisfy { $0.trainingSeconds <= 100 * 60 + 0.5 })
+            XCTAssertGreaterThan(p.plan.weeks.count, 3)
+        }
+    }
+
+    /// Blocker 3: the long run's share cut never leaves an easy run longer than the long run.
+    func testEasyRunsStayWithinTheLongRunWhenItsShareIsCut() throws {
+        let days: Set<PlanWeekday> = [.tuesday, .thursday, .sunday]
+        let s = GoalFixture.settings(weeksAhead: 14, days: days, pain: .recurring(areas: ["shin"]))
+        let p = try built(edit(s, hold: FreezeFixture.hold()))
+        assertPasses(p)
+        let week = p.plan.weeks[0]
+        let long = try XCTUnwrap(week.workouts.first { $0.kind == .long })
+        XCTAssertLessThan(long.durationSeconds, 40 * 60, "the long run's share of the week was cut")
+        let easy = week.workouts.filter { $0.kind == .easy || $0.kind == .recovery }
+        XCTAssertFalse(easy.isEmpty)
+        XCTAssertTrue(easy.allSatisfy { $0.durationSeconds <= long.durationSeconds + 0.01 }, "\(week.workouts.map(\.durationSeconds))")
+        // The Thursday run was 30 minutes: cut to the long run's length, the cut time dropped, not shared out.
+        XCTAssertEqual(week.workouts.first { $0.id == "old-w1-thu" }?.durationSeconds, long.durationSeconds)
+        XCTAssertLessThanOrEqual(week.trainingSeconds, 120 * 60)
+        let limits = { () -> GuardrailLimits in var l = GuardrailLimits.default; l.easyRunsWithinLongRun = true; return l }()
+        let again = GuardrailChecker.check(history: p.history + FreezeFixture.currentWeekRest, planned: p.plan.workouts,
+                                           timeZone: tz, limits: limits, freezes: [freeze])
+        XCTAssertFalse(again.violations.contains { $0.rule == .easyRunLength }, "\(again.violations)")
+    }
+
+    /// The freeze ends before the plan's first week and covers only the rest of this week.
+    func testAFreezeThatEndsBeforeTheFirstWeekIsStillInTheExplanation() throws {
+        let short = DateInterval(start: freeze.start, end: FreezeFixture.at(week: 0, day: .saturday))
+        let hold = FreezeHold(freezes: [short], sessions: FreezeFixture.currentWeekRest)
+        let r = edit(newGoal, hold: hold)
+        let p = try built(r)
+        XCTAssertEqual(p.freezeEdit?.frozenWeekStarts, [])
+        XCTAssertEqual(p.freezeEdit?.freezes, [short])
+        XCTAssertEqual(p.freezeEdit?.firstGrowthWeekStart, FreezeFixture.monday(week: 1))
+        let line = try XCTUnwrap(r.explanation.first { $0.hasPrefix("Your pain freeze") }, "\(r.explanation)")
+        XCTAssertTrue(line.contains("still holds until"), line)
+        XCTAssertTrue(line.contains(PlanFormatting.day(short.end, timeZone: tz)), line)
+        XCTAssertTrue(line.contains("rest of this week"), line)
+        // The plan is the one the edit builds with no freeze, and the rest of the week is kept as before.
+        let plain = edit(newGoal, hold: nil)
+        XCTAssertEqual(try built(r).plan, try built(plain).plan)
+        XCTAssertEqual(r.keptThisWeek, plain.keptThisWeek)
+        // A freeze that is already over says nothing.
+        let over = DateInterval(start: freeze.start, end: FreezeFixture.at(week: 0, day: .tuesday))
+        let none = edit(newGoal, hold: FreezeHold(freezes: [over], sessions: FreezeFixture.currentWeekRest))
+        XCTAssertNil(try built(none).freezeEdit)
     }
 
     // MARK: Growth after the freeze

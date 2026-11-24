@@ -80,7 +80,8 @@ extension AdaptationState {
 public struct FreezeEditSummary: Equatable, Sendable {
     /// The freezes as they were given: unchanged, still ending on their original day.
     public let freezes: [DateInterval]
-    /// The weeks held at their frozen volume and intensity, in order.
+    /// The weeks held at their frozen volume and intensity, in order. Empty when the freeze ends before the plan's
+    /// first week and covers only the rest of the current week (the summary then still says the freeze holds).
     public let frozenWeekStarts: [Date]
     /// The frozen weeks laid out again on new days or a new longest session
     /// (or cut to the week before it), with the same workouts moved,
@@ -110,7 +111,8 @@ public struct FreezeEditSummary: Equatable, Sendable {
         let from = freezeStart.map { " from \(day($0))" } ?? ""
         let until = freezeEnd.map { " until \(day($0))" } ?? ""
         var main = "Your pain freeze\(from) still holds\(until); this edit doesn't shorten or lift it. "
-        main += n == 1 ? "The week it covers keeps its volume and its easy sessions"
+        main += n == 0 ? "It covers the rest of this week, which stays as planned"
+              : n == 1 ? "The week it covers keeps its volume and its easy sessions"
                        : "The \(n) weeks it covers keep their volume and their easy sessions"
         if let g = firstGrowthWeekStart {
             main += ", and the new plan grows toward your new goal from the week of \(day(g)) (SPEC 3.5 rule 7)."

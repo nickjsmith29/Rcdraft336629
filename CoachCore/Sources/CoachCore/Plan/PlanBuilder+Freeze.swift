@@ -80,9 +80,20 @@ extension PlanBuilder {
             let isRaceWeek = j == starts.count - 1
             let held = hold.sessions.filter { $0.date >= ws && $0.date < end(ws) }
             if !isRaceWeek, !held.contains(where: { $0.kind != .race && $0.kind != .rest }) { break }
+            // Hard days just outside the week (the Sunday before, the Monday after) keep a quality session off
+            // the week's edge days, as the builder's `excludedQualityDays` does (F4).
+            let cal = PlanCalendar.calendar(timeZone: timeZone)
+            func hardOn(_ day: Date, in sessions: [PlannedWorkout]) -> Bool {
+                sessions.contains { $0.kind.isQuality && cal.isDate($0.date, inSameDayAs: day) }
+            }
+            let dayBefore = cal.date(byAdding: .day, value: -1, to: ws) ?? ws.addingTimeInterval(-86_400)
+            var outside: Set<Int> = []
+            if hardOn(dayBefore, in: (frozen.last?.workouts ?? []) + past + carried) { outside.insert(-1) }
+            if !isRaceWeek, hardOn(end(ws), in: hold.sessions) { outside.insert(7) }
             let ctx = FreezeLayout.Context(input: input, limits: limits, timeZone: timeZone,
                                            moveLongRun: hold.longRunDayChanged, race: isRaceWeek ? race : nil,
-                                           ceiling: previousVolume.flatMap { $0 > 0 ? $0 : nil })
+                                           ceiling: previousVolume.flatMap { $0 > 0 ? $0 : nil },
+                                           hardOutside: outside)
             let laid = FreezeLayout.lay(held: held, weekStart: ws, ctx)
             if laid.relaid { relaid.append(ws) }
             var workouts = laid.workouts
@@ -94,7 +105,14 @@ extension PlanBuilder {
             j += 1
         }
         let k = frozen.count
-        guard k > 0 else { return plain() }
+        guard k > 0 else {
+            // No week of the plan is held. A freeze that still lasts (it ends before the plan's first week, so it
+            // covers the rest of this week) is still said in the explanation: the plan is as `build` makes it.
+            let plan = plain()
+            guard hold.freezes.contains(where: { $0.end > input.startDate }) else { return plan }
+            return (plan.result, FreezeEditSummary(freezes: hold.freezes, frozenWeekStarts: [], relaidWeekStarts: [],
+                                                   raceWeekStart: nil, firstGrowthWeekStart: starts.first, swapLandsOn: nil))
+        }
         let frozenSessions = frozen.flatMap(\.workouts)
         let heldIDs = Set(frozenSessions.map(\.id))
 
@@ -154,7 +172,13 @@ extension PlanBuilder {
         let tailPhase = built.first?.phase
         let planned = frozen.flatMap(\.workouts) + built.flatMap(\.workouts)
         let checked = history.filter { $0.date < input.startDate } + carried
-        let report = GuardrailChecker.check(history: checked, planned: planned, timeZone: timeZone, limits: limits,
+        // The builder's own run limits (F3, #23): no easy run longer than the week's long run, no run past the
+        // category's long-run cap or the runner's longest session.
+        var checkLimits = limits
+        checkLimits.maxTrainingRunSeconds = min(limits.maxTrainingRunSeconds, input.maxSessionSeconds ?? .infinity,
+                                                PlanHeuristics.longRunCap(v.category, isMarathonDistance: RaceCategory.isMarathonDistance(meters: input.raceDistanceMeters)))
+        checkLimits.easyRunsWithinLongRun = true
+        let report = GuardrailChecker.check(history: checked, planned: planned, timeZone: timeZone, limits: checkLimits,
                                             freezes: hold.freezes)
         guard report.passed else { return (.cannotBuild([.failsGuardrails(report)]), nil) }
 
