@@ -86,7 +86,8 @@ final class LongerBreakReturnPlanTests: XCTestCase {
 
     private func minutes(_ w: TrainingPlanWeek) -> Double { w.workouts.reduce(0) { $0 + $1.durationSeconds } / 60 }
 
-    private func run(_ c: Case, file: StaticString = #filePath, line: UInt = #line) -> Bool {
+    /// Builds and checks `c`; returns nil when it builds, else the kind of refusal.
+    private func run(_ c: Case, file: StaticString = #filePath, line: UInt = #line) -> String? {
         let h = history(c)
         let report = BaselineBuilder.build(activities: h.activities, efforts: [],
                                            options: BaselineOptions(asOf: h.asOf, timeZone: tz))
@@ -104,7 +105,7 @@ final class LongerBreakReturnPlanTests: XCTestCase {
             }
             if lowVolume {
                 XCTAssertLessThan(input.recentWeeklySeconds ?? 0, 5400, "\(c): refused with enough recent volume", file: file, line: line)
-                return false
+                return "recentVolumeTooLow"
             }
             // SPEC GAP (reported on #32): a 15 day break with a single week back is
             // both a short break by weeks (2 break weeks) and a longer one by days.
@@ -122,7 +123,7 @@ final class LongerBreakReturnPlanTests: XCTestCase {
                 return false
             }
             XCTAssertTrue(gap && onlyNoWorkable, "\(c): \(result.issues)", file: file, line: line)
-            return false
+            return "noWorkableWeek"
         }
         let check = GuardrailChecker.check(history: planHistory, planned: plan.workouts, timeZone: tz)
         XCTAssertTrue(check.passed, "\(c): \(check.violations.map(\.explanation))", file: file, line: line)
@@ -135,26 +136,127 @@ final class LongerBreakReturnPlanTests: XCTestCase {
                                          file: file, line: line)
             }
         }
-        return true
+        return nil
     }
 
     private let shapes: [(String, Shape)] = [("3 days", BreakNoWorkableWeekTests.three), ("5 days", BreakNoWorkableWeekTests.five)]
 
+    /// Every case builds and passes the checker, except exactly the refusals listed: F3's own minimum
+    /// for the recent weekly volume (`recentVolumeTooLow`, under 5400 s) and the 15 day, 1 week back
+    /// gap (`noWorkableWeek`, see `run`). A regression that refuses any other case, or builds one of
+    /// these, fails here.
     func testBreaksOf15And21And28DaysEndingOneToSixWeeksBeforeTheStartBuild() {
-        var built = 0, total = 0
+        var refused: [String] = []
         for (name, s) in shapes {
             for daysOff in [15, 21, 28] {
                 for back in [1, 2, 3, 4, 6] {
                     for share in [0.3, 0.5, 0.7, 0.85] {
-                        total += 1
-                        if run(Case(shape: s, name: name, daysOff: daysOff, weeksBack: back, share: share)) { built += 1 }
+                        let c = Case(shape: s, name: name, daysOff: daysOff, weeksBack: back, share: share)
+                        if let kind = run(c) { refused.append("\(c): \(kind)") }
                     }
                 }
             }
         }
-        // The cases that can build (enough recent volume) all did: the guard in
-        // `run` fails on any other refusal. A few at least build.
-        XCTAssertGreaterThan(built, total / 3, "built \(built) of \(total)")
+        XCTAssertEqual(refused, Self.expectedRefusals)
+    }
+
+    static let expectedRefusals: [String] = [
+        "3 days, 15 days off, 1 weeks back at 30%: recentVolumeTooLow",
+        "3 days, 15 days off, 1 weeks back at 50%: recentVolumeTooLow",
+        "3 days, 15 days off, 1 weeks back at 70%: noWorkableWeek",
+        "3 days, 15 days off, 1 weeks back at 85%: noWorkableWeek",
+        "3 days, 15 days off, 2 weeks back at 30%: recentVolumeTooLow",
+        "3 days, 15 days off, 2 weeks back at 50%: recentVolumeTooLow",
+        "3 days, 15 days off, 2 weeks back at 70%: recentVolumeTooLow",
+        "3 days, 15 days off, 3 weeks back at 30%: recentVolumeTooLow",
+        "3 days, 15 days off, 3 weeks back at 50%: recentVolumeTooLow",
+        "3 days, 15 days off, 4 weeks back at 30%: recentVolumeTooLow",
+        "3 days, 15 days off, 6 weeks back at 30%: recentVolumeTooLow",
+        "3 days, 21 days off, 1 weeks back at 30%: recentVolumeTooLow",
+        "3 days, 21 days off, 1 weeks back at 50%: recentVolumeTooLow",
+        "3 days, 21 days off, 1 weeks back at 70%: recentVolumeTooLow",
+        "3 days, 21 days off, 1 weeks back at 85%: recentVolumeTooLow",
+        "3 days, 21 days off, 2 weeks back at 30%: recentVolumeTooLow",
+        "3 days, 21 days off, 2 weeks back at 50%: recentVolumeTooLow",
+        "3 days, 21 days off, 2 weeks back at 70%: recentVolumeTooLow",
+        "3 days, 21 days off, 3 weeks back at 30%: recentVolumeTooLow",
+        "3 days, 21 days off, 3 weeks back at 50%: recentVolumeTooLow",
+        "3 days, 21 days off, 4 weeks back at 30%: recentVolumeTooLow",
+        "3 days, 21 days off, 6 weeks back at 30%: recentVolumeTooLow",
+        "3 days, 28 days off, 1 weeks back at 30%: recentVolumeTooLow",
+        "3 days, 28 days off, 1 weeks back at 50%: recentVolumeTooLow",
+        "3 days, 28 days off, 1 weeks back at 70%: recentVolumeTooLow",
+        "3 days, 28 days off, 1 weeks back at 85%: recentVolumeTooLow",
+        "3 days, 28 days off, 2 weeks back at 30%: recentVolumeTooLow",
+        "3 days, 28 days off, 2 weeks back at 50%: recentVolumeTooLow",
+        "3 days, 28 days off, 2 weeks back at 70%: recentVolumeTooLow",
+        "3 days, 28 days off, 3 weeks back at 30%: recentVolumeTooLow",
+        "3 days, 28 days off, 3 weeks back at 50%: recentVolumeTooLow",
+        "3 days, 28 days off, 4 weeks back at 30%: recentVolumeTooLow",
+        "3 days, 28 days off, 6 weeks back at 30%: recentVolumeTooLow",
+        "5 days, 15 days off, 1 weeks back at 30%: noWorkableWeek",
+        "5 days, 15 days off, 1 weeks back at 50%: noWorkableWeek",
+        "5 days, 15 days off, 1 weeks back at 70%: noWorkableWeek",
+        "5 days, 15 days off, 1 weeks back at 85%: noWorkableWeek",
+        "5 days, 15 days off, 2 weeks back at 30%: recentVolumeTooLow",
+        "5 days, 15 days off, 2 weeks back at 50%: recentVolumeTooLow",
+        "5 days, 15 days off, 3 weeks back at 30%: recentVolumeTooLow",
+        "5 days, 15 days off, 4 weeks back at 30%: recentVolumeTooLow",
+        "5 days, 15 days off, 6 weeks back at 30%: recentVolumeTooLow",
+        "5 days, 21 days off, 1 weeks back at 30%: recentVolumeTooLow",
+        "5 days, 21 days off, 1 weeks back at 50%: recentVolumeTooLow",
+        "5 days, 21 days off, 1 weeks back at 70%: recentVolumeTooLow",
+        "5 days, 21 days off, 1 weeks back at 85%: recentVolumeTooLow",
+        "5 days, 21 days off, 2 weeks back at 30%: recentVolumeTooLow",
+        "5 days, 21 days off, 2 weeks back at 50%: recentVolumeTooLow",
+        "5 days, 21 days off, 3 weeks back at 30%: recentVolumeTooLow",
+        "5 days, 21 days off, 4 weeks back at 30%: recentVolumeTooLow",
+        "5 days, 21 days off, 6 weeks back at 30%: recentVolumeTooLow",
+        "5 days, 28 days off, 1 weeks back at 30%: recentVolumeTooLow",
+        "5 days, 28 days off, 1 weeks back at 50%: recentVolumeTooLow",
+        "5 days, 28 days off, 1 weeks back at 70%: recentVolumeTooLow",
+        "5 days, 28 days off, 1 weeks back at 85%: recentVolumeTooLow",
+        "5 days, 28 days off, 2 weeks back at 30%: recentVolumeTooLow",
+        "5 days, 28 days off, 2 weeks back at 50%: recentVolumeTooLow",
+        "5 days, 28 days off, 3 weeks back at 30%: recentVolumeTooLow",
+        "5 days, 28 days off, 4 weeks back at 30%: recentVolumeTooLow",
+        "5 days, 28 days off, 6 weeks back at 30%: recentVolumeTooLow"
+    ]
+
+    /// The reproduction of the reviewer's #80 round 2: 7 weeks of Mon 60 / Wed 60 / Sat 100, a
+    /// 100 minute run on the Monday of week 7, week 8 empty, a plan starting on the Monday of week 9
+    /// with the first training day on the Wednesday or later. Days off are the Tuesday to Sunday
+    /// of week 7 (6), week 8 (7), and the Monday and Tuesday of week 9 (2): 15, a longer break by
+    /// days though only one break week. The pre-break level is the mean of weeks 4 to 7,
+    /// (220 + 220 + 220 + 100) / 4 = 190, so week 1 may hold 0.65 x 190 = 123.5 minutes, and the
+    /// builder must agree with the checker on it (on main this built at the ramp's 70%).
+    func testABreakThatRunsUpToTheStartAndPassesFourteenDaysBuildsWhatTheCheckerAccepts() throws {
+        let sets: [(String, Set<PlanWeekday>, PlanWeekday)] = [
+            ("3 days", [.wednesday, .friday, .sunday], .sunday),
+            ("5 days", [.wednesday, .thursday, .friday, .saturday, .sunday], .sunday)]
+        for (name, days, longDay) in sets {
+            var acts: [Activity] = []
+            for w in 0..<7 {
+                for (d, m) in [(PlanWeekday.monday, 60.0), (.wednesday, 60), (.saturday, 100)] {
+                    acts.append(GoalFixture.run("n\(w)\(d.rawValue)", week: w, day: d, minutes: m))
+                }
+            }
+            acts.append(GoalFixture.run("m7", week: 7, day: .monday, minutes: 100))
+            let asOf = BaselineFixture.date(day: 9 * 7, hour: 8)
+            let report = BaselineBuilder.build(activities: acts, efforts: [], options: BaselineOptions(asOf: asOf, timeZone: tz))
+            let race = asOf.addingTimeInterval((14 * 7 + 4) * 86_400 + 3600)
+            let goal = GoalSettings(race: GoalRace(name: "Synthetic", date: race, distanceMeters: Distance.tenK, time: .bestPossible),
+                                    schedule: TrainingSchedule(trainingDays: days, longRunDay: longDay, maxSession: .noLimit),
+                                    hasTreadmillAccess: false, painHistory: PainHistory.none)
+            var input = BaselinePlanMapping.planInput(settings: goal, baseline: report, startDate: report.asOf)
+            input.heartRateZones = HRZones(lthr: 165)
+            let history = BaselinePlanMapping.planHistory(from: report)
+            let result = PlanBuilder.build(input, history: history, timeZone: tz)
+            let plan = try XCTUnwrap(result.plan, "\(name): \(result.issues)")
+            XCTAssertLessThanOrEqual(minutes(plan.weeks[0]), 123.5 + 1e-6, name)
+            let check = GuardrailChecker.check(history: history, planned: plan.workouts, timeZone: tz)
+            XCTAssertTrue(check.passed, "\(name): \(check.violations.map(\.explanation))")
+        }
     }
 
     func testTheBreakWeeksAreWhatTheFixtureSays() {

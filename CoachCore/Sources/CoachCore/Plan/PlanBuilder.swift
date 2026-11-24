@@ -370,7 +370,18 @@ public enum PlanBuilder {
         // to hold what was logged so far, which can leave no workable first
         // week. Once it is over, all of its other runs count: build then.
         let openUnknown = builder.startWeekOpen && builder.ledger.lastUnknown
-        let result = builder.run()
+        var result = builder.run()
+        // The days a break still running at the start may count by the plan's first run are read at
+        // their most (see `Builder.init`); if the checker, which counts up to the run the plan actually
+        // places, refuses that plan, the plain reading is tried (heuristic, #32).
+        if builder.wideDaysApplies, case .cannotBuild(let issues) = result,
+           issues.contains(where: { if case .failsGuardrails = $0 { return true }; return false }) {
+            var narrow = Builder(input: input, v: validated, timeZone: timeZone, limits: limits, history: past, wideDays: false)
+            narrow.diagnose = diagnose
+            narrow.shortenWarmUps = shortenWarmUps
+            let narrowResult = narrow.run()
+            if narrowResult.plan != nil { builder = narrow; result = narrowResult }
+        }
         if openUnknown, case .cannotBuild(let issues) = result,
            issues.contains(where: { issue in
                if case .noWorkableWeek(let week, _) = issue { return week == validated.firstMonday }
@@ -782,8 +793,10 @@ public enum PlanBuilder {
                 cap = min(long.ceiling, nextReturnRamp?.allowed ?? .infinity)
                 // A week that stays at or under the break line (a quarter of the pre-break level)
                 // is one more break week, not a return week: the checker then holds it to the plain
-                // 10% check, so a plain cap under that line bounds the week too (heuristic: the
-                // conservative reading; the week is sized under the plain cap or over the line).
+                // 10% check, so the week is capped at that plain cap whenever it is under the line
+                // (heuristic, the conservative reading, and discontinuous: a plain cap just under the
+                // line holds the week to it, though a week over the line could take the step's ceiling.
+                // The spec allows a week to be held lower).
                 if long.returnWeek == 1, let plain, plain > 0, plain < limits.breakWeekMaxRatio * long.brk.level {
                     cap = min(cap, plain)
                 }
@@ -1173,6 +1186,8 @@ private struct Builder {
     var paceFactor: Double?
     /// The start's week is history but not over (#48): the plan is provisional.
     let startWeekOpen: Bool
+    /// True when a break running up to the start is read with more than one day to the plan's first run.
+    var wideDaysApplies = false
     /// Mean weekly volume of the last (up to 4) complete history weeks before the start week, if any.
     let historyMean: Double?
     /// Hard days (quality and races), counted in days from the plan's first Monday.
@@ -1185,7 +1200,8 @@ private struct Builder {
     /// cap (#105, #113); false only in tests, to compare against.
     var shortenWarmUps = true
 
-    init(input: PlanInput, v: PlanBuilder.Validated, timeZone: TimeZone, limits: GuardrailLimits, history: [PlannedWorkout]) {
+    init(input: PlanInput, v: PlanBuilder.Validated, timeZone: TimeZone, limits: GuardrailLimits, history: [PlannedWorkout],
+         wideDays: Bool = true) {
         self.input = input
         self.v = v
         self.timeZone = timeZone
@@ -1216,12 +1232,21 @@ private struct Builder {
         // Breaks of more than 14 days off that read as only one or two break
         // weeks are longer breaks too (3.5 rule 4). The day before the start
         // is the last day whose runs are known, and a break still running
-        // there counts a day more, as the checker may count the days up to
-        // the plan's first run (the conservative reading).
+        // there counts the days the checker may still count: up to the plan's
+        // first run, which can fall as late as the last training day of the
+        // plan's first week (the conservative reading, #32): a break that is
+        // short by weeks but may pass 14 days by then is read as longer, so
+        // the plan holds the lower of the ramp and the steps, never above the
+        // ramp alone. A mid-week start keeps one day: the open week's own runs
+        // are history, and its scenarios cover how it ends.
         let dayBeforeStart = PlanCalendar.calendar(timeZone: timeZone).date(byAdding: .day, value: -1, to: input.startDate)
+        let lastTrainingDay = input.trainingDays.map(\.rawValue).max() ?? 0
+        let wide = max(1, open ? 1 : lastTrainingDay)
+        let slack = wideDays ? wide : 1
+        self.wideDaysApplies = wide > 1
         let byDays = Set(GuardrailChecker.longerByDays(
             GuardrailChecker.breaks(volumes: outsideVolumes, lows: outsideLows, raceWeeks: weekRaces, limits: limits),
-            weeks: weeks, timeZone: timeZone, limits: limits, lastKnown: dayBeforeStart, ongoingSlack: 1)
+            weeks: weeks, timeZone: timeZone, limits: limits, lastKnown: dayBeforeStart, ongoingSlack: slack)
             .filter(\.longerByDays).map(\.first))
         self.ledger = PlanBuilder.ledgers(volumes: weeks.map { $0.volume(.time) }, lows: weeks.map { $0.knownVolume(.time) },
                                           outside: outsideVolumes,
