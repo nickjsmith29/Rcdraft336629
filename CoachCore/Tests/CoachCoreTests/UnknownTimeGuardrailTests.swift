@@ -53,8 +53,13 @@ final class UnknownTimeGuardrailTests: XCTestCase {
         return out
     }
 
-    private func check(_ runs: [Activity], _ plan: [PlannedWorkout]) -> GuardrailReport {
-        GuardrailChecker.check(history: history(runs), planned: plan, timeZone: utc)
+    /// The plain rules for a break of more than 14 days: these tests are about the
+    /// unknown-volume references, which rule 4's steps (SPEC 0.8, #32) replace
+    /// after such a break; the steps have their own tests (LongerBreakReturnTests).
+    private let plain = GuardrailLimits(longerBreakReturnSteps: [])
+
+    private func check(_ runs: [Activity], _ plan: [PlannedWorkout], limits: GuardrailLimits = .default) -> GuardrailReport {
+        GuardrailChecker.check(history: history(runs), planned: plan, timeZone: utc, limits: limits)
     }
 
     private func weeks(of r: GuardrailReport, _ rule: GuardrailRule) -> [Date] {
@@ -119,9 +124,9 @@ final class UnknownTimeGuardrailTests: XCTestCase {
 
     // MARK: A reference of 0 over an unknown week (round-3 probes)
 
-    private func assertAllowsNothing(_ runs: [Activity], planWeek: Int,
+    private func assertAllowsNothing(_ runs: [Activity], planWeek: Int, limits: GuardrailLimits = .default,
                                      file: StaticString = #filePath, line: UInt = #line) throws {
-        let r = check(runs, planned([300], from: planWeek))
+        let r = check(runs, planned([300], from: planWeek), limits: limits)
         let v = try XCTUnwrap(r.violations.first { $0.rule == .weeklyIncrease && $0.weekStart == monday(planWeek) },
                               "\(r.notEvaluated.map(\.reason))", file: file, line: line)
         XCTAssertEqual(v.allowed, 0, file: file, line: line)
@@ -131,7 +136,12 @@ final class UnknownTimeGuardrailTests: XCTestCase {
 
     func testProbeEmptyThenCorruptOnlyWeek() throws {
         // (a) 100, empty, the broken run alone, then 300.
-        try assertAllowsNothing(weeks([100, 0, nil], unknownL: [2: 0]), planWeek: 3)
+        // (This is also 16 days off, a longer break: under the plain rules.)
+        try assertAllowsNothing(weeks([100, 0, nil], unknownL: [2: 0]), planWeek: 3, limits: plain)
+        // Under rule 4's steps the next week is bounded by step 1, 65% of 100 minutes, whatever the
+        // unknown week was (the least it can have been restarts the steps at step 1).
+        let r = check(weeks([100, 0, nil], unknownL: [2: 0]), planned([300], from: 3))
+        XCTAssertEqual(r.violations.first { $0.rule == .weeklyIncrease }?.allowed ?? 0, 65 * 60, accuracy: 1e-6)
     }
 
     func testProbeCorruptOnlyWeekThenEmpty() throws {
@@ -147,11 +157,18 @@ final class UnknownTimeGuardrailTests: XCTestCase {
     func testKnownEmptyWeekStillSkips() {
         // A known zero week gives no percentage to measure, as before (three
         // empty weeks, a long break under 3.5 rule 4: the plain rules apply).
-        let r = check(weeks([100, 0, 0, 0]), planned([300], from: 4))
+        let r = check(weeks([100, 0, 0, 0]), planned([300], from: 4), limits: plain)
         XCTAssertFalse(r.violations.contains { $0.rule == .weeklyIncrease })
         XCTAssertTrue(r.notEvaluated.contains { $0.rule == .weeklyIncrease && $0.weekStart == monday(4) })
-        // Two empty weeks are a short break: the return ramp caps the week (#62).
-        let short = check(weeks([100, 0, 0]), planned([300], from: 3))
+        // Under rule 4's steps (SPEC 0.8) the same history allows 65% of 100 minutes.
+        let steps = check(weeks([100, 0, 0, 0]), planned([300], from: 4))
+        XCTAssertEqual(steps.violations.first { $0.rule == .weeklyIncrease }?.allowed ?? 0, 65 * 60, accuracy: 1e-6)
+        // Two empty weeks here are 19 days off: both a short and a longer break, the lower of the ramp's 70%
+        // and the step's 65% (SPEC 0.8). One empty week (12 days off) is a short break only: the return
+        // ramp caps the week at 70% (#62).
+        let two = check(weeks([100, 0, 0]), planned([300], from: 3))
+        XCTAssertEqual(two.violations.first { $0.rule == .weeklyIncrease }?.allowed ?? 0, 65 * 60, accuracy: 1e-6)
+        let short = check(weeks([100, 0]), planned([300], from: 2))
         XCTAssertEqual(short.violations.first { $0.rule == .weeklyIncrease }?.allowed ?? 0, 70 * 60, accuracy: 1e-6)
     }
 
@@ -160,8 +177,15 @@ final class UnknownTimeGuardrailTests: XCTestCase {
         for (label, runs) in [("a", weeks([200, 200, 200, 0, nil], unknownL: [4: 0])),
                               ("b", weeks([200, 200, 200, nil, 0], unknownL: [3: 0]))] {
             let start = PlanFixture.date(week: 5, day: 0, hour: 6)
-            let result = PlanBuilder.build(input(start: start, recentWeekly: 200 * 60), history: history(runs), timeZone: utc)
+            let result = PlanBuilder.build(input(start: start, recentWeekly: 200 * 60), history: history(runs), timeZone: utc,
+                                           limits: plain)
             XCTAssertEqual(result.issues, [.historyVolumeUnknown(rebuildOn: monday(6))], label)
+            // Under rule 4's steps (more than 14 days off, SPEC 0.8) the week before the start does not decide
+            // the first week's ceiling: the plan builds or waits, and any plan passes the checker.
+            let steps = PlanBuilder.build(input(start: start, recentWeekly: 200 * 60), history: history(runs), timeZone: utc)
+            if let plan = steps.plan {
+                XCTAssertTrue(GuardrailChecker.check(history: history(runs), planned: plan.workouts, timeZone: utc).passed, label)
+            }
         }
     }
 
@@ -267,7 +291,8 @@ final class UnknownTimeGuardrailTests: XCTestCase {
         // reviewer's 2 x 50 + 90 also breaks the long-run share and, with
         // four builds in a row, the cadence, which repair rightly fixes.)
         let zones = try XCTUnwrap(HRZones(lthr: 165))
-        let context = AdaptationContext(zones: zones, timeZone: utc, tracksPain: false)
+        // The plain rules for a break of more than 14 days (see `plain`): the history here is 16 days off.
+        let context = AdaptationContext(zones: zones, timeZone: utc, tracksPain: false, guardrails: plain)
         var plan: [PlannedWorkout] = []
         for w in 3...6 {
             let (easy, long): (Double, Double) = w == 5 ? (40, 50) : (50, 70)
@@ -280,7 +305,7 @@ final class UnknownTimeGuardrailTests: XCTestCase {
             let done = history([activity("k0", week: 0, day: 1, minutes: 100)])
             let o = AdaptationEngine.processRun(CompletedRun(activity: corrupt(week: brokenWeek)), state: AdaptationState(),
                                                 plan: plan, history: done, context: context)
-            let before = GuardrailChecker.check(history: o.history, planned: plan, timeZone: utc)
+            let before = GuardrailChecker.check(history: o.history, planned: plan, timeZone: utc, limits: plain)
             XCTAssertEqual(o.plan, plan, "\(label): \(o.changes.map(\.explanation))")
             XCTAssertTrue(o.changes.isEmpty, label)
             XCTAssertEqual(o.guardrailReport.violations, before.violations, label)
@@ -302,12 +327,13 @@ final class UnknownTimeGuardrailTests: XCTestCase {
         XCTAssertTrue(known.guardrailReport.passed, "\(known.guardrailReport.violations.map(\.explanation))")
         XCTAssertEqual(known.plan, plan)
         XCTAssertNil(known.rebuildOn)
-        // By default the empty week 1 is a short break after 100 min (3.5 rule
-        // 4, #62): week 3 is week 2 back, at most 90% of the pre-break 100 min.
+        // By default the empty week 1 is a short break after 100 min by weeks (3.5 rule 4, #62) and, with
+        // the fixture's 16 days off (5 + 7 + 4), a longer one by days: week 3 is week 2 back, at most the
+        // lower of the ramp's 90% and the step's 82.5% of the pre-break 100 min (SPEC 0.8).
         let ramp = GuardrailChecker.check(history: known.history, planned: plan, timeZone: utc)
         let v = try XCTUnwrap(ramp.violations.first { $0.rule == .weeklyIncrease })
         XCTAssertEqual(v.weekStart, monday(3))
-        XCTAssertEqual(v.allowed, 90 * 60, accuracy: 1e-6)
+        XCTAssertEqual(v.allowed, 82.5 * 60, accuracy: 1e-6)
     }
 
     // MARK: Pain freeze after an unknown week (round 5)

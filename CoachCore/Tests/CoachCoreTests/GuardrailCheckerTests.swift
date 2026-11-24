@@ -88,13 +88,21 @@ final class GuardrailCheckerTests: XCTestCase {
     }
 
     func testZeroReferenceWeekIsNotEvaluated() {
-        // Three empty weeks, a long break (3.5 rule 4 keeps the plain rules):
-        // the reference (one step back past a zero week) is still zero.
+        // Three empty weeks are a longer break (3.5 rule 4, SPEC 0.8, #32): the
+        // plain 10% check would have no reference (a zero week), so week 1
+        // back is bounded by its step instead, 65% of the pre-break 300.
         let history = F.easyWeek(0, minutes: 300, prefix: "h")
         let r = GuardrailChecker.check(history: history, planned: F.easyWeek(4, minutes: 400), timeZone: utc)
-        XCTAssertTrue(violations(r, .weeklyIncrease).isEmpty)
-        XCTAssertTrue(skips(r, .weeklyIncrease).first?.reason.contains("no volume") ?? false)
-        // Two empty weeks are a short break: the return ramp applies (#62).
+        XCTAssertEqual(violations(r, .weeklyIncrease).first?.allowed ?? 0, 0.65 * 300 * 60, accuracy: 1e-6)
+        XCTAssertTrue(skips(r, .weeklyIncrease).isEmpty)
+        // With the longer-break return off, the plain rules: the reference
+        // (one step back past a zero week) is still zero, so not evaluated.
+        let off = GuardrailChecker.check(history: history, planned: F.easyWeek(4, minutes: 400), timeZone: utc,
+                                         limits: GuardrailLimits(longerBreakReturnSteps: []))
+        XCTAssertTrue(violations(off, .weeklyIncrease).isEmpty)
+        XCTAssertTrue(skips(off, .weeklyIncrease).first?.reason.contains("no volume") ?? false)
+        // Two empty weeks, exactly 14 days off here (the last run on the
+        // Sunday, the first back on a Monday), are a short break: the return ramp applies (#62).
         let short = GuardrailChecker.check(history: history, planned: F.easyWeek(3, minutes: 400), timeZone: utc)
         XCTAssertEqual(violations(short, .weeklyIncrease).first?.allowed ?? 0, 0.7 * 300 * 60, accuracy: 1e-6)
     }

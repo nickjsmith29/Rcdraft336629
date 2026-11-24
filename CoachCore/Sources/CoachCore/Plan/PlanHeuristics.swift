@@ -124,6 +124,11 @@ public enum PlanHeuristics {
     /// weeks rather than by 20% at a time from almost nothing. Heuristic: the
     /// owner's values.
     public static let regrowthReturnSteps = [0.65, 0.825, 1.0]
+    /// The return steps after a longer break (SPEC 3.5 rule 4, owner's
+    /// decision, #32): return step `k` holds at most `longerBreakReturnSteps[k-1]`
+    /// x the pre-break weekly volume. The same 65 / 82.5 / 100% as rule 7's
+    /// return after a pain stop of more than 14 days (#107). Heuristic.
+    public static let longerBreakReturnSteps = [0.65, 0.825, 1.0]
     /// Planned volumes stay this fraction under each guardrail cap: always
     /// under the weekly caps (3.5 rule 2, the return ramp and recovery
     /// weeks). Under the single-run spike rule (3.5 rule 1, F3) only when a
