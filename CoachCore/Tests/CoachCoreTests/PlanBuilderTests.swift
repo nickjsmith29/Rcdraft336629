@@ -751,16 +751,20 @@ final class PlanBuilderTests: XCTestCase {
         XCTAssertLessThan(allowed, PlanHeuristics.minimumWeekSeconds)
     }
 
-    func testNoRoomAfterALongBreakIsAnExplicitIssue() {
-        // Back from three weeks off, a long break (3.5 rule 4 keeps the plain
-        // rules): the rolling 4-week rule leaves under an hour for the plan's
-        // second week (1.3 x 240 for the 4 weeks to it, 480 already run).
+    func testNoRoomAfterALongBreakIsAnExplicitIssue() throws {
+        // Back from three weeks off, a longer break: under the plain rules the rolling 4-week rule
+        // leaves under an hour for the plan's second week (1.3 x 240 for the 4 weeks to it, 480 already
+        // run), an explicit issue. Under 0.8's steps (3.5 rule 4, #32) the break's weeks count at the
+        // pre-break level (240) in that check, so the plan builds.
         let h = runs([240, 240, 240, 240, 0, 0, 0, 240, 240], before: planMonday)
         let i = input(mid, distance: Distance.tenK, start: planMonday, race: raceDate(weeks: 12, from: planMonday, tz: utc),
                       recentScale: 0.5)
-        let result = issues(i, history: h)
+        let result = issues(i, history: h, limits: GuardrailLimits(longerBreakReturnSteps: []))
         guard case .noWorkableWeek(_, let allowed)? = result.first, result.count == 1 else { return XCTFail("\(result)") }
         XCTAssertLessThan(allowed, PlanHeuristics.minimumWeekSeconds)
+        let built = PlanBuilder.build(i, history: h, timeZone: utc)
+        let p = try XCTUnwrap(built.plan, "\(built.issues)")
+        assertValid(p, input: i, history: h, tz: utc, label: "longer break, steps")
         // A low-volume runner back from two weeks off, a short break: this
         // was an explicit issue before #62 and now builds.
         let r = SyntheticRunner.all[0]

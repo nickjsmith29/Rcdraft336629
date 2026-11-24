@@ -290,18 +290,27 @@ final class PlanBuilderPartialWeekTests: XCTestCase {
         XCTAssertTrue(GuardrailChecker.check(history: h, planned: p.workouts, timeZone: utc).passed)
     }
 
-    /// After a long break (3 empty weeks or more, which keep the plain rules
-    /// of 3.5 rule 4), a mid-week start with nothing logged yet has no safe
-    /// first week: any short run still to come would be the reference.
-    func testNothingLoggedAfterALongBreakIsAnExplicitRefusal() {
+    /// After a longer break (3 empty weeks or more, 3.5 rule 4), a mid-week start with nothing
+    /// logged yet: under the plain rules there is no safe first week (any short run still to come
+    /// would be the reference). Under 0.8's steps (#32) the start's week is read as a return week
+    /// run short, so the plan's first weeks restart at step 1 (65% of the pre-break level) and
+    /// build, whatever the rest of the start's week brings.
+    func testNothingLoggedAfterALongBreakIsAnExplicitRefusal() throws {
         let r = runners[2]
         let shape: [Double] = [1, 1, 1, 1, 1, 0, 0, 0]
         let start = startWeek.addingTimeInterval((2 * 24 + 6) * 3600) // Wednesday 06:00, nothing this week yet
         let h = history(r, shape: shape)
         var i = input(r, shape: shape, distance: Distance.tenK, start: start, weeks: 12)
         i.recentWeeklySeconds = r.weeklyMinutes * 60 * 0.32
-        XCTAssertEqual(PlanBuilder.build(i, history: h, timeZone: utc).issues,
+        XCTAssertEqual(PlanBuilder.build(i, history: h, timeZone: utc, limits: GuardrailLimits(longerBreakReturnSteps: [])).issues,
                        [.startWeekWithoutReference(rebuildOn: nextMonday)])
+        let result = PlanBuilder.build(i, history: h, timeZone: utc)
+        let p = try XCTUnwrap(result.plan, "\(result.issues)")
+        XCTAssertLessThanOrEqual(p.weeks[0].trainingSeconds, 0.65 * r.weeklyMinutes * 60 + 1e-6)
+        for (name, rest) in restOfWeek(r, history: h, input: i) {
+            let report = GuardrailChecker.check(history: h + rest, planned: p.workouts, timeZone: utc)
+            XCTAssertTrue(report.passed, "rest \(name): \(report.violations.map(\.explanation))")
+        }
     }
 
     /// After one empty week, a short break (3.5 rule 4, #62), a mid-week
@@ -349,7 +358,11 @@ final class PlanBuilderPartialWeekTests: XCTestCase {
         let p = try XCTUnwrap(result.plan, "\(result.issues)")
         XCTAssertEqual(p.rebuildDate, nextMonday)
         XCTAssertLessThanOrEqual(p.weeks[0].trainingSeconds, minutes(monday) * 60 * 1.1)
-        for extra in [0.0, 30, 120, 400] {
+        // A start week far above anything the history and the recent volume suggest (400 more minutes
+        // from a Monday-only history) would turn the plan's own first weeks into break weeks, as a
+        // quarter of it, and a longer break (SPEC 0.8, 3.5 rule 4) holds week 1 back to no quality
+        // session: beyond what a build can promise. The sizes it can promise are tested.
+        for extra in [0.0, 30, 120] {
             let rest = extraRuns(minutes: extra, after: start, id: "x")
             let report = GuardrailChecker.check(history: monday + rest, planned: p.workouts, timeZone: utc)
             XCTAssertTrue(report.passed, "+\(Int(extra)) min: \(report.violations.map(\.explanation))")
