@@ -143,6 +143,54 @@ final class EasyRunCapAdaptedTests: XCTestCase {
         XCTAssertEqual(kept.state.preCap.weeks.first?.secondsBeforeCap, 100)
     }
 
+    // MARK: The pain freeze holds a week to what was run
+
+    /// Week 4 ran 90 min but its entry reads 130 before the cap (40 cut). The
+    /// freeze (3.5 rule 7) holds week 5 to what was actually run, 90 min, not
+    /// to 130: a planned 120 is a violation, allowed 90.
+    private func frozenWeekFive() -> (history: [PlannedWorkout], plan: [PlannedWorkout], regrowth: GuardrailRegrowth, freeze: DateInterval) {
+        let hist = history([100, 100, 100, 100, 90])
+        let plan = (0..<3).map { F.easy("f\($0)", week: 5, day: $0 * 2, minutes: 40) }
+        let week4 = PlanCalendar.weekStart(containing: F.date(week: 4, day: 0), timeZone: tz)
+        let entry = PreCapWeek(weekStart: week4, secondsBeforeCap: 130 * 60, secondsCut: 40 * 60)
+        let week5 = PlanCalendar.weekStart(containing: F.date(week: 5, day: 0), timeZone: tz)
+        let week6 = PlanCalendar.weekStart(containing: F.date(week: 6, day: 0), timeZone: tz)
+        return (hist, plan, GuardrailRegrowth(preCap: GuardrailPreCap(weeks: [entry])), DateInterval(start: week5, end: week6))
+    }
+
+    func testTheVolumeFreezeReadsACappedWeekAtWhatWasRun() throws {
+        let f = frozenWeekFive()
+        let r = GuardrailChecker.check(history: f.history, planned: f.plan, timeZone: tz, limits: context().guardrails,
+                                       freezes: [f.freeze], regrowth: f.regrowth)
+        let v = try XCTUnwrap(r.violations.first { $0.rule == .volumeFreeze })
+        XCTAssertEqual(v.measured, 120 * 60)
+        XCTAssertEqual(v.allowed, 90 * 60)
+    }
+
+    func testRepairHoldsTheWeekAfterACappedWeekToWhatWasRun() {
+        let f = frozenWeekFive()
+        let r = GuardrailRepair.repair(plan: f.plan, history: f.history, asOf: F.date(week: 5, day: 0, hour: 6), freezes: [f.freeze],
+                                       context: contextWithLimit(), regrowth: f.regrowth)
+        XCTAssertLessThanOrEqual(F.weekVolume(5, r.plan), 90 * 60 + 1e-6)
+        XCTAssertFalse(r.report.violations.contains { $0.rule == .volumeFreeze })
+    }
+
+    // MARK: A new plan that starts after a capped future week
+
+    func testANewPlanStartingLaterDropsTheEntriesOfWeeksBetween() {
+        func entry(_ week: Int) -> PreCapWeek {
+            PreCapWeek(weekStart: PlanCalendar.weekStart(containing: F.date(week: week, day: 0), timeZone: tz),
+                       secondsBeforeCap: 6000, secondsCut: 600)
+        }
+        var state = AdaptationState()
+        state.preCap = GuardrailPreCap(weeks: [entry(2), entry(6)])
+        let fresh = (0..<2).map { F.easy("x\($0)", week: 7, day: $0 * 2, minutes: 30) }
+        let o = AdaptationEngine.processDay(asOf: F.date(week: 4, day: 1, hour: 6), state: state, plan: fresh,
+                                            history: history([100, 100, 100, 100]), context: context())
+        XCTAssertEqual(o.state.preCap.weeks.map(\.weekStart), [entry(2).weekStart],
+                       "week 6 lies between today and the new plan's first week: it is no longer the week that was capped")
+    }
+
     // MARK: The share bound with two capped runs, and rounding
 
     /// The share cut can only cap one run: with 35% the long run stays above
@@ -172,7 +220,9 @@ final class EasyRunCapAdaptedTests: XCTestCase {
     /// 36.5. Rounding down keeps every run at most the long run, but the share
     /// of the smaller week, 36.5 / 72.5 = 50.3%, is a hair over 1 / (1 + 1) =
     /// 50% (n = 1). That is the cost of whole minutes; the week is read at its
-    /// 86.5 min before the cap (42.2%), so no second repair follows.
+    /// 86.5 min before the cap (42.2%). That is over the 35% limit, so in the
+    /// engine a share repair would come first; this test calls `capEasyRuns`
+    /// directly, after such a repair, to show the cap itself.
     func testAFractionalLongRunCapsAtWholeMinutesAndTheShareIsReadBeforeTheCap() throws {
         let plan = [F.easy("e", week: 4, day: 1, minutes: 50), F.long("l", week: 4, day: 5, minutes: 36.5)]
         let week = PlanCalendar.weekStart(containing: F.date(week: 4, day: 0), timeZone: tz)

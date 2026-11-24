@@ -179,7 +179,7 @@ extension AdaptationEngine.Work {
         // A new plan replaces the adapted one: a week it covers is no longer the
         // week that was capped, so its pre-cap time is not carried over. Weeks
         // before it are history and keep theirs (3.5 rule 5, #54).
-        let firstWeek = weekOf(cutoff)
+        let firstWeek = min(weekOf(cutoff), asOf.map { weekOf($0) } ?? weekOf(cutoff))
         state.preCap.weeks.removeAll { $0.weekStart >= firstWeek }
         let ids = Set(plan.map(\.id))
         var earlier: [Date: Double] = [:]

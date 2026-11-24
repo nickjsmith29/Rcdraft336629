@@ -605,6 +605,7 @@ public enum GuardrailChecker {
         let ownVolumes: [Double?]
         let ownOutside: [Double?]
         let ownOutsideLows: [Double]
+        let ownLows: [Double]
         var violations: [GuardrailViolation] = []
         var skips: [GuardrailSkip] = []
         var flags: [GuardrailFlag] = []
@@ -633,6 +634,7 @@ public enum GuardrailChecker {
             self.ownVolumes = weeks.map { $0.volume(limits.measure) }
             self.ownOutside = weeks.map { $0.volumeOutsideRaces(limits.measure) }
             self.ownOutsideLows = weeks.map { $0.knownVolumeOutsideRaces(limits.measure) }
+            self.ownLows = weeks.map { $0.knownVolume(limits.measure) }
             self.volumes = zip(weeks, extras).map { w, e in w.volume(limits.measure).map { $0 + e } }
             self.lows = zip(weeks, extras).map { w, e in w.knownVolume(limits.measure) + (w.volume(limits.measure) == nil ? 0 : e) }
             self.outside = zip(weeks, extras).map { w, e in w.volumeOutsideRaces(limits.measure).map { $0 + e } }
@@ -1048,9 +1050,11 @@ public enum GuardrailChecker {
         }
 
         mutating func checkFreeze(_ i: Int) {
+            // The freeze holds a week to what was actually run (3.5 rule 7), so a capped week
+            // is read at its own time here, not at its time before the cap (#54).
             // A week of unknown volume is read at its known part (#40), as above.
-            let thisKnown = volumes[i] != nil
-            let v = volumes[i] ?? lows[i]
+            let thisKnown = ownVolumes[i] != nil
+            let v = ownVolumes[i] ?? ownLows[i]
             // Held to the previous week's actual volume: unlike the 10% rule there
             // is no step back past a recovery week, because a freeze stops growth.
             guard i >= 1 else {
@@ -1059,8 +1063,8 @@ public enum GuardrailChecker {
             // A week before of unknown volume held at least its known part
             // (`lows`, #40): holding to that keeps the freeze for every
             // volume the week may truly have held.
-            let known = volumes[i - 1] != nil
-            let prev = volumes[i - 1] ?? lows[i - 1]
+            let known = ownVolumes[i - 1] != nil
+            let prev = ownVolumes[i - 1] ?? ownLows[i - 1]
             guard prev > 0 else {
                 guard !known else {
                     return skip(.volumeFreeze, i, "the week before has no volume, so there is nothing to hold to")
