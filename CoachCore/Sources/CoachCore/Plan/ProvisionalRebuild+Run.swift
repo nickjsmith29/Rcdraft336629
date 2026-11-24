@@ -131,6 +131,9 @@ extension ProvisionalRebuild {
     /// - Parameters:
     ///   - current: the plan in use, with any stored retry.
     ///   - freezes: pain freezes in force (SPEC 3.5), as for any new plan.
+    ///   - freeze: the same freezes with the plan the runner holds
+    ///     (`AdaptationState.freezeHold(plan:at:)`), so the rebuild holds the
+    ///     weeks a freeze covers instead of being refused (SPEC 3.5 rule 7, #72).
     ///   - limits: guardrail limits, as for any new plan.
     ///   - baseline: builds the F1 baseline (`BaselineBuilder.build`) with
     ///     the options given, which `run` sets as of the rebuild's `today` in
@@ -142,6 +145,7 @@ extension ProvisionalRebuild {
     ///   due, the race week reached, or `.invalidDate`).
     public static func run(_ current: CurrentPlan,
                            freezes: [DateInterval],
+                           freeze: FreezeHold? = nil,
                            limits: GuardrailLimits = .default,
                            now: Date,
                            timeZone: TimeZone,
@@ -157,7 +161,7 @@ extension ProvisionalRebuild {
         case .rebuild(let today):
             let report = await baseline(BaselineOptions(asOf: today, timeZone: timeZone))
             let result = GoalPlanner.plan(settings: current.plan.settings, baseline: report, today: today,
-                                          limits: limits, freezes: freezes)
+                                          limits: limits, freezes: freezes, freeze: freeze)
             let outcome = resolve(provisional: current.plan, attempt: result, now: now, timeZone: timeZone)
             if outcome.isWiringError {
                 let problem = Problem.wiringError(issues: result.issues.filter(isWiringError))
