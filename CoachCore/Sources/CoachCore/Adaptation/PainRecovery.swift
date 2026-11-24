@@ -428,10 +428,24 @@ public struct PainReturn: Equatable, Sendable, Codable {
     /// stood when the stop began, before the stop, the return, the
     /// guardrails over the stopped weeks or any freeze cut it.
     public var planWeeks: [PlanWeekVolume]
+    /// The week a restart set back to step 1 (SPEC 3.5 rule 7, #93): the week
+    /// after a return week run short, after a stop of more than 14 days; nil
+    /// while no restart has happened (and in a state stored before format
+    /// version 6). Its ceiling is `restartFloor` at least, and week 1's
+    /// guards don't come back with it.
+    public var restartWeek: Date?
+    /// What was run in the week before `restartWeek`, in the guardrail
+    /// measure (each week's own time): the restarted week's ceiling is never
+    /// below the week actually run. Nil with `restartWeek`.
+    public var restartFloor: Double?
+    /// Monday 00:00 of the latest return week judged for a restart; the weeks
+    /// up to it are not judged again. Nil before the first full week is judged.
+    public var judgedThrough: Date?
 
     public init(start: Date, level: Double?, preStopLongRun: Double?, daysOff: Int?, fromMovement: Bool,
                 step: Int = 1, stepWeek: Date, failedSteps: [Int] = [], restDay: Date? = nil,
-                planWeeks: [PlanWeekVolume] = []) {
+                planWeeks: [PlanWeekVolume] = [], restartWeek: Date? = nil, restartFloor: Double? = nil,
+                judgedThrough: Date? = nil) {
         self.start = start
         self.level = level
         self.preStopLongRun = preStopLongRun
@@ -442,6 +456,26 @@ public struct PainReturn: Equatable, Sendable, Codable {
         self.failedSteps = failedSteps
         self.restDay = restDay
         self.planWeeks = planWeeks
+        self.restartWeek = restartWeek
+        self.restartFloor = restartFloor
+        self.judgedThrough = judgedThrough
+    }
+
+    /// The floor of the weekly ceiling in the plan week starting `week`: what
+    /// was run in the week before a restart, when `week` is the restarted
+    /// week; nil in every other week. SPEC 3.5 rule 7, #93.
+    public func restartFloor(forWeek week: Date) -> Double? {
+        week == restartWeek ? restartFloor : nil
+    }
+
+    /// The step a run's pain is judged against in the plan week starting
+    /// `week` (`PainReturnRule.symptoms`). In a restarted week it is at least
+    /// step 2: the restart sets the weekly ceilings back, not week 1's
+    /// allowance of usual +1, which returns only through the recurrence rule.
+    /// A heuristic, the conservative reading (SPEC 3.5 rule 7, #93).
+    public func symptomStep(atWeek week: Date, timeZone: TimeZone, limits: PainRecoveryLimits = .default) -> Int {
+        let s = step(atWeek: week, timeZone: timeZone, limits: limits)
+        return week == restartWeek ? max(2, s) : s
     }
 
     /// The fixed volume the week at full plan volume is judged against: the

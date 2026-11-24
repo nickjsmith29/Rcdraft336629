@@ -637,7 +637,7 @@ final class AdaptationRegrowthTests: XCTestCase {
     func testTheSnapshotIsStoredAndAVersion3StateDecodesWithoutOne() throws {
         let o = AdaptationEngine.processDay(asOf: F.date(week: 0, day: 2, hour: 6), state: AdaptationState(), plan: F.weeks(0..<3),
                                             history: [], context: F.context())
-        XCTAssertEqual(AdaptationState.formatVersion, 5)
+        XCTAssertEqual(AdaptationState.formatVersion, 6)
         let data = try JSONEncoder().encode(o.state)
         let back = try JSONDecoder().decode(AdaptationState.self, from: data)
         XCTAssertEqual(back.planSnapshot, o.state.planSnapshot)
