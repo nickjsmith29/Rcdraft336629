@@ -12,6 +12,10 @@ public struct GoalPlan: Equatable, Sendable {
     /// and any pain freezes in force (`PainCheckInRule`), after the builder's
     /// own check. It always passes; a failure is returned as an issue instead.
     public let guardrailReport: GuardrailReport
+    /// What the edit did around a pain freeze (SPEC 3.5 rule 7, #72): the
+    /// weeks held at their frozen volume, and where growth resumes. Nil when
+    /// no freeze was passed in `freeze`, or none reached the plan's first week.
+    public let freezeEdit: FreezeEditSummary?
 
     /// True when the pain check-in applies (SPEC 3.5).
     public var tracksPain: Bool { settings.painHistory.tracksPain }
@@ -49,11 +53,13 @@ public enum GoalPlanIssue: Equatable, Sendable {
     /// The built plan broke a guardrail in the independent check (for example
     /// growth inside a pain freeze, which the builder doesn't see).
     ///
-    /// Known limit: `PlanBuilder` takes no freezes, so while a freeze is in
-    /// force, any plan or goal edit that grows a frozen week is refused with
-    /// this issue (safe, but it blocks edits until the freeze ends, at most a
-    /// week). The previous plan stays, and the adaptation engine (F4) holds
-    /// its volume through the freeze.
+    /// A plan that grows a week a pain freeze covers is refused with this
+    /// issue when the freeze is passed only as `freezes`. Pass the freeze as a
+    /// `FreezeHold` (`freeze:`) and the edit goes through around the frozen
+    /// weeks instead (SPEC 3.5 rule 7, #72); the issue is then returned only
+    /// when the held weeks themselves can't pass the checker (for example a
+    /// race longer than the week's frozen volume). The previous plan stays,
+    /// and the adaptation engine (F4) holds its volume through the freeze.
     case failsGuardrails(GuardrailReport)
 }
 
@@ -146,11 +152,17 @@ public enum GoalPlanner {
     ///   - today: the plan starts from here (`PlanInput.startDate`).
     ///   - freezes: pain freezes in force (`PainResponse.freeze`, SPEC 3.5).
     ///     See `GoalPlanIssue.failsGuardrails` for how they limit a new plan.
+    ///   - freeze: the same freezes with the plan the runner holds
+    ///     (`AdaptationState.freezeHold(plan:at:)`). The new plan then holds
+    ///     the weeks the freeze covers as they are and grows after them
+    ///     (`PlanBuilder.build(_:history:timeZone:limits:freeze:)`, SPEC 3.5
+    ///     rule 7, #72). Its freezes are checked in addition to `freezes`.
     public static func plan(settings: GoalSettings,
                             baseline: BaselineReport,
                             today: Date,
                             limits: GuardrailLimits = .default,
-                            freezes: [DateInterval] = []) -> GoalPlanResult {
+                            freezes: [DateInterval] = [],
+                            freeze: FreezeHold? = nil) -> GoalPlanResult {
         var issues: [GoalPlanIssue] = []
         let problems = settings.problems(today: today, timeZone: baseline.timeZone)
         if !problems.isEmpty { issues.append(.invalidSettings(problems)) }
@@ -168,15 +180,27 @@ public enum GoalPlanner {
 
         let input = BaselinePlanMapping.planInput(settings: settings, baseline: baseline, startDate: today)
         let history = BaselinePlanMapping.planHistory(from: baseline).filter { $0.date < today }
-        switch PlanBuilder.build(input, history: history, timeZone: baseline.timeZone, limits: limits) {
+        let built: (result: PlanBuildResult, summary: FreezeEditSummary?)
+        if let freeze {
+            built = PlanBuilder.buildHolding(input, history: history, timeZone: baseline.timeZone, limits: limits, freeze: freeze)
+        } else {
+            built = (PlanBuilder.build(input, history: history, timeZone: baseline.timeZone, limits: limits), nil)
+        }
+        switch built.result {
         case .cannotBuild(let buildIssues):
             return .cannotPlan([.cannotBuild(buildIssues)])
         case .plan(let plan):
-            let report = GuardrailChecker.check(history: history, planned: plan.workouts,
-                                                timeZone: baseline.timeZone, limits: limits, freezes: freezes)
+            // With a freeze held, the rest of the current week as the old plan keeps it is how that
+            // week ends, which the first frozen week is measured against (`FreezeHold.carried`).
+            let carried = built.summary == nil ? [] : freeze?.carried(
+                from: today, before: plan.weeks.first?.weekStart ?? today,
+                trainingDays: settings.schedule.trainingDays, timeZone: baseline.timeZone) ?? []
+            let report = GuardrailChecker.check(history: history + carried, planned: plan.workouts,
+                                                timeZone: baseline.timeZone, limits: limits,
+                                                freezes: freezes + (freeze?.freezes ?? []))
             guard report.passed else { return .cannotPlan([.failsGuardrails(report)]) }
             return .plan(GoalPlan(settings: settings, input: input, plan: plan, history: history,
-                                  guardrailReport: report))
+                                  guardrailReport: report, freezeEdit: built.summary))
         }
     }
 
@@ -184,6 +208,14 @@ public enum GoalPlanner {
     /// what changed. When no plan can be made, the result says why and the
     /// app keeps the previous plan. `units` sets how a race distance reads in
     /// the explanation (km or miles); the plan itself is the same in both.
+    ///
+    /// `freeze` is the pain freeze in force with the plan the runner holds
+    /// (`AdaptationState.freezeHold(plan:at:)`, SPEC 3.5 rule 7, #72): the edit
+    /// then goes through, holding the weeks the freeze covers, and the
+    /// explanation says the freeze still holds and when it ends. Its plan
+    /// replaces `previousPlan`'s sessions in deciding which sessions of the
+    /// rest of this week stay. Without it, a plan that grows a frozen week
+    /// is refused (`GoalPlanIssue.failsGuardrails`) as before.
     public static func replan(from previous: GoalSettings,
                               previousPlan: TrainingPlan?,
                               to settings: GoalSettings,
@@ -191,9 +223,16 @@ public enum GoalPlanner {
                               today: Date,
                               limits: GuardrailLimits = .default,
                               freezes: [DateInterval] = [],
+                              freeze: FreezeHold? = nil,
                               units: UnitPreference = .metric) -> GoalReplan {
         let changes = self.changes(from: previous, to: settings)
-        let result = plan(settings: settings, baseline: baseline, today: today, limits: limits, freezes: freezes)
+        // A changed long-run day moves a frozen week's long run (`FreezeHold.longRunDayChanged`).
+        var hold = freeze
+        if hold != nil, changes.contains(where: { if case .longRunDay = $0 { return true }; return false }) {
+            hold?.longRunDayChanged = true
+        }
+        let allFreezes = freezes + (hold?.freezes ?? [])
+        let result = plan(settings: settings, baseline: baseline, today: today, limits: limits, freezes: freezes, freeze: hold)
         var summary: PlanChangeSummary?
         if let old = previousPlan, let new = result.plan?.plan {
             summary = PlanChangeSummary(previousWeeks: old.weeks.count, newWeeks: new.weeks.count,
@@ -207,12 +246,13 @@ public enum GoalPlanner {
         var dropped: [PlannedWorkout] = []
         switch result {
         case .plan(let p):
-            if let old = previousPlan, let firstWeek = p.plan.weeks.first?.weekStart {
+            // Under a freeze the plan the engine holds is the old plan (its sessions are adapted).
+            if let oldWorkouts = hold?.sessions ?? previousPlan?.workouts, let firstWeek = p.plan.weeks.first?.weekStart {
                 let cal = PlanCalendar.calendar(timeZone: tz)
                 let dayStart = cal.startOfDay(for: today)
                 let ranToday = baseline.runs.contains { cal.isDate($0.start, inSameDayAs: today) }
                 // Earlier today: undone (no run logged today) sessions are dropped, never kept; done ones are history.
-                let earlier = ranToday ? [] : old.workouts.filter { $0.date >= dayStart && $0.date < today && $0.date < firstWeek }
+                let earlier = ranToday ? [] : oldWorkouts.filter { $0.date >= dayStart && $0.date < today && $0.date < firstWeek }
                 let missed = earlier.filter { $0.kind != .race }
                 if !missed.isEmpty {
                     dropped += missed
@@ -221,12 +261,12 @@ public enum GoalPlanner {
                         : "The \(missed.count) sessions from earlier today in the previous plan weren't done, so they were dropped.")
                 }
                 // The old race is never carried over; the new plan has its own race day.
-                let oldRaces = old.workouts.filter { $0.kind == .race && ($0.date >= today || earlier.contains($0)) && $0.date < firstWeek }
+                let oldRaces = oldWorkouts.filter { $0.kind == .race && ($0.date >= today || earlier.contains($0)) && $0.date < firstWeek }
                 if !oldRaces.isEmpty {
                     dropped += oldRaces
                     lines.append("The race in the previous plan falls this week and is dropped; the new plan has its own race day.")
                 }
-                let rest = old.workouts.filter { $0.date >= today && $0.date < firstWeek && $0.kind != .race }
+                let rest = oldWorkouts.filter { $0.date >= today && $0.date < firstWeek && $0.kind != .race }
                 let onDays = rest.filter { settings.schedule.trainingDays.contains(PlanWeekday(of: $0.date, timeZone: tz)) }
                 let offDays = rest.filter { !onDays.contains($0) }
                 if !offDays.isEmpty {
@@ -236,8 +276,10 @@ public enum GoalPlanner {
                 if !onDays.isEmpty {
                     // The new plan already passed without them (`plan`); keep them only if it still passes with them.
                     let report = GuardrailChecker.check(history: p.history, planned: onDays + p.plan.workouts,
-                                                        timeZone: tz, limits: limits, freezes: freezes)
-                    if report.passed {
+                                                        timeZone: tz, limits: limits, freezes: allFreezes)
+                    // Under a freeze edit they stay: the plan was checked with them as the end of this week
+                    // (`plan`), and without them the frozen week would grow past the week before it.
+                    if report.passed || p.freezeEdit != nil {
                         kept = onDays
                         lines.append("\(count(onDays.count)) left this week from the previous plan stay as planned.")
                     } else {
@@ -254,6 +296,7 @@ public enum GoalPlanner {
                 lines.append("The plan runs \(p.plan.weeks.count) weeks to race day, peaking at "
                              + "\(PlanFormatting.volume(peak(p.plan), .time)) a week.")
             }
+            if let edit = p.freezeEdit { lines += edit.explanation(timeZone: tz) }
             lines.append("Every week passes the load guardrails (SPEC 3.5).")
         case .cannotPlan:
             lines.append("No new plan could be built from these settings, so the previous plan stays in place.")

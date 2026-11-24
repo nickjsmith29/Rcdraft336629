@@ -353,19 +353,20 @@ public enum PlanBuilder {
     /// cool-down, to compare against (#113).
     static func buildDiagnosed(_ input: PlanInput, history: [PlannedWorkout] = [], timeZone: TimeZone,
                                limits: GuardrailLimits = .default, diagnose: Bool = true,
-                               shortenWarmUps: Bool = true)
+                               shortenWarmUps: Bool = true, heldWeeks: Int = 0, firstWeekCap: Double = .infinity)
         -> (result: PlanBuildResult, weeks: [WeekVolumeDiagnostic]) {
         let validated: Validated
         // Everything done before the start counts, including runs earlier on
         // the start day; sessions dated later are not history yet.
         let past = history.filter { $0.date < input.startDate }
-        switch validate(input, history: past, timeZone: timeZone, limits: limits) {
+        switch validate(input, history: past, timeZone: timeZone, limits: limits, heldWeeks: heldWeeks) {
         case .failure(let issues): return (.cannotBuild(issues.list), [])
         case .success(let v): validated = v
         }
         var builder = Builder(input: input, v: validated, timeZone: timeZone, limits: limits, history: past)
         builder.diagnose = diagnose
         builder.shortenWarmUps = shortenWarmUps
+        builder.firstWeekCap = firstWeekCap
         // An open start week with a session of unknown time (#40) is only known
         // to hold what was logged so far, which can leave no workable first
         // week. Once it is over, all of its other runs count: build then.
@@ -379,6 +380,7 @@ public enum PlanBuilder {
             var narrow = Builder(input: input, v: validated, timeZone: timeZone, limits: limits, history: past, wideDays: false)
             narrow.diagnose = diagnose
             narrow.shortenWarmUps = shortenWarmUps
+            narrow.firstWeekCap = firstWeekCap
             let narrowResult = narrow.run()
             if narrowResult.plan != nil { builder = narrow; result = narrowResult }
         }
@@ -409,8 +411,11 @@ public enum PlanBuilder {
 
     static func positive(_ x: Double?) -> Bool { x.map { $0.isFinite && $0 > 0 } ?? true }
 
+    /// `heldWeeks` counts weeks of the plan that come before `input.startDate`
+    /// and are already laid out (the weeks a pain freeze holds, `FreezeHold`,
+    /// 3.5 rule 7, #72): they count toward the lead-time limits only.
     static func validate(_ input: PlanInput, history: [PlannedWorkout], timeZone: TimeZone,
-                         limits: GuardrailLimits) -> Result<Validated, IssueList> {
+                         limits: GuardrailLimits, heldWeeks: Int = 0) -> Result<Validated, IssueList> {
         var issues: [PlanBuildIssue] = []
         var notes: [String] = []
 
@@ -503,8 +508,8 @@ public enum PlanBuilder {
             if let c = category {
                 if weekStarts.count > PlanHeuristics.maximumWeeks {
                     issues.append(.leadTimeTooLong(weeksAvailable: weekStarts.count, maximumWeeks: PlanHeuristics.maximumWeeks))
-                } else if weekStarts.count < PlanHeuristics.minimumWeeks(c) {
-                    issues.append(.leadTimeTooShort(weeksAvailable: weekStarts.count, minimumWeeks: PlanHeuristics.minimumWeeks(c)))
+                } else if weekStarts.count + heldWeeks < PlanHeuristics.minimumWeeks(c) {
+                    issues.append(.leadTimeTooShort(weeksAvailable: weekStarts.count + heldWeeks, minimumWeeks: PlanHeuristics.minimumWeeks(c)))
                 }
             }
         }
@@ -1199,6 +1204,10 @@ private struct Builder {
     /// Let a quality session's warm-up and cool-down shrink under a session
     /// cap (#105, #113); false only in tests, to compare against.
     var shortenWarmUps = true
+    /// Most the plan's first week may hold: the week after the weeks a pain
+    /// freeze holds, measured from the last of them (`FreezeHold`, 3.5 rule 7,
+    /// #72). Infinite for every other plan.
+    var firstWeekCap = Double.infinity
 
     init(input: PlanInput, v: PlanBuilder.Validated, timeZone: TimeZone, limits: GuardrailLimits, history: [PlannedWorkout],
          wideDays: Bool = true) {
@@ -1836,7 +1845,7 @@ private struct Builder {
                 plannedRecovery = later.union(plannedRecovery.filter { $0 == 0 })
             }
             let isTaper = phases[i] == .taper
-            let cap = min(ledger.nextCap, ledger.spreadCap) * margin
+            let cap = min(ledger.nextCap, ledger.spreadCap, i == 0 ? firstWeekCap : .infinity) * margin
             let forced = ledger.streak >= maxBuildRun
             // A recovery week is 75% of the week before, rising toward the
             // checker's 80% (with margin) when 75% would fall under the floor.
