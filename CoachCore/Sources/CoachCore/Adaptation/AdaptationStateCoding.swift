@@ -25,17 +25,20 @@ import Foundation
 // of SPEC 3.5 rule 6, #64); an older state decodes with an empty snapshot,
 // and the engine then takes the plan handed in with the next event as the
 // original plan (it may already be cut, so regrowth can only reach that).
+// 5 adds `preCap` (the weeks whose easy runs were capped at a cut long run,
+// with their time before the cap, SPEC 3.5 rule 5, #54); an older state
+// decodes with none, and every week is then read at its own time.
 // Doubles are stored as they are, so a non-finite value (which the engine
 // never stores) needs a `JSONEncoder.nonConformingFloatEncodingStrategy`.
 
 extension AdaptationState: Codable {
     /// Version of the stored format. Decoding a higher version throws.
-    public static let formatVersion = 4
+    public static let formatVersion = 5
 
     enum CodingKeys: String, CodingKey {
         case formatVersion, assessments, qualitySignals, easyHeartRates, longRuns, painCheckIns, appliedPainResponse,
              lastAppliedCheckIn, freezes, holds, qualityPaceFactor, easyPaceFactor, reportedHoldShortfalls,
-             painReports, painStop, painRecovery, planSnapshot
+             painReports, painStop, painRecovery, planSnapshot, preCap
     }
 
     public init(from decoder: Decoder) throws {
@@ -61,7 +64,8 @@ extension AdaptationState: Codable {
             painReports: try c.decodeIfPresent([PainReport].self, forKey: .painReports) ?? [],
             painStop: try c.decodeIfPresent(PainStop.self, forKey: .painStop),
             painRecovery: try c.decodeIfPresent(PainRecovery.self, forKey: .painRecovery) ?? PainRecovery(),
-            planSnapshot: try c.decodeIfPresent(PlanSnapshotCoding.self, forKey: .planSnapshot)?.value() ?? PlanSnapshot())
+            planSnapshot: try c.decodeIfPresent(PlanSnapshotCoding.self, forKey: .planSnapshot)?.value() ?? PlanSnapshot(),
+            preCap: try c.decodeIfPresent(GuardrailPreCap.self, forKey: .preCap) ?? .none)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -83,6 +87,7 @@ extension AdaptationState: Codable {
         try c.encodeIfPresent(painStop, forKey: .painStop)
         try c.encode(painRecovery, forKey: .painRecovery)
         try c.encode(PlanSnapshotCoding(planSnapshot), forKey: .planSnapshot)
+        try c.encode(preCap, forKey: .preCap)
     }
 }
 

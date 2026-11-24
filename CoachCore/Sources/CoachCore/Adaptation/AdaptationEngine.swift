@@ -243,6 +243,10 @@ public enum AdaptationEngine {
             self.state = state
             self.plan = plan.sorted { $0.date < $1.date }
             self.history = history
+            // F3's limit, no easy run longer than the week's long run, holds
+            // for every plan the engine changes (3.5 rule 5, #54).
+            var context = context
+            context.guardrails.easyRunsWithinLongRun = true
             self.context = context
             self.handedIn = history + plan
             takeSnapshot(asOf: asOf)
@@ -917,9 +921,12 @@ public enum AdaptationEngine {
             _ = enforceHolds(asOf: asOf)
             // Shortfalls are reported once, from the final plan below.
             changes = Array(changes[..<before]) + changes[before...].filter { $0.kind != .holdShortfall }
-            let regrowth = regrowth(asOf: asOf)
+            var regrowth = regrowth(asOf: asOf)
             var repaired = repairKeepingTestRun(asOf: asOf, regrowth: regrowth)
             changes += repaired.changes
+            // The weeks repair capped keep their time before the cap, for good (#54).
+            state.preCap = repaired.preCap
+            regrowth.preCap = repaired.preCap
             dedupeTestRunDrop()
             plan = repaired.plan.sorted { $0.date < $1.date }
             // Growing back to the original plan where the rules now allow it

@@ -2101,7 +2101,7 @@ private struct Builder {
                 : "Race pace: \(set) at your \(raceName) pace, to rehearse the race effort."
         }
         if extraEasy >= 60 {
-            purpose += " The last \(Int(extraEasy / 60)) min of the cool-down is easy running, moved here from the easy runs so that none is longer than the long run."
+            purpose += EasyExtension.sentence(minutes: Int(extraEasy / 60))
         }
         var rules: [PlanRule] = sharpener || ctx.taper ? [.taper, .intensityDistribution, .qualityLimit]
             : [.intensityDistribution, .periodization, .qualityLimit]

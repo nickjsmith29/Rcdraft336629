@@ -108,10 +108,16 @@ public struct GuardrailRegrowth: Equatable, Sendable {
 
     public var weeks: [Week]
     public var cutWeeks: [CutWeek]
+    /// The weeks whose easy runs were capped at a cut long run, with their
+    /// time before the cap (SPEC 3.5 rule 5, #54). Not part of the regrowth
+    /// itself: it travels with it because the engine hands both to the
+    /// checker in the same call, and it is empty unless a cap was made.
+    public var preCap: GuardrailPreCap
 
-    public init(weeks: [Week] = [], cutWeeks: [CutWeek] = []) {
+    public init(weeks: [Week] = [], cutWeeks: [CutWeek] = [], preCap: GuardrailPreCap = .none) {
         self.weeks = weeks
         self.cutWeeks = cutWeeks
+        self.preCap = preCap
     }
 
     /// Step `step`'s share of the original plan's week in `steps` (the last
@@ -125,7 +131,7 @@ public struct GuardrailRegrowth: Equatable, Sendable {
     /// No regrowth: the plain rules.
     public static let none = GuardrailRegrowth()
 
-    public var isEmpty: Bool { weeks.isEmpty && cutWeeks.isEmpty }
+    public var isEmpty: Bool { weeks.isEmpty && cutWeeks.isEmpty && preCap.isEmpty }
 
     /// The regrowth week starting `weekStart`, if any.
     public func week(_ weekStart: Date) -> Week? { weeks.first { $0.weekStart == weekStart } }

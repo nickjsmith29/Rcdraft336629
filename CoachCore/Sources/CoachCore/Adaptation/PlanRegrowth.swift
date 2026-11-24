@@ -248,6 +248,12 @@ extension AdaptationEngine.Work {
     /// and the cut weeks it follows, for the checker (see the file comment).
     /// Empty during a pain stop and without a snapshot.
     func regrowth(asOf: Date) -> GuardrailRegrowth {
+        var out = growthWeeks(asOf: asOf)
+        out.preCap = state.preCap   // the weeks capped at a cut long run (3.5 rule 5, #54)
+        return out
+    }
+
+    private func growthWeeks(asOf: Date) -> GuardrailRegrowth {
         guard state.painStop == nil, !state.planSnapshot.sessions.isEmpty || !state.planSnapshot.earlier.isEmpty else { return .none }
         let g = context.guardrails
         let rise = g.regrowthMaxWeeklyRise.isFinite && g.regrowthMaxWeeklyRise >= 0 ? g.regrowthMaxWeeklyRise : PlanHeuristics.regrowthMaxWeeklyRise
