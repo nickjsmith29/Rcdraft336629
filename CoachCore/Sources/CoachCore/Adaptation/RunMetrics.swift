@@ -16,9 +16,12 @@ public struct StreamMeans: Equatable, Sendable, Codable {
 /// section 8 `metrics(run)`). Every value comes from the run's own streams;
 /// a value that can't be measured is nil, never guessed.
 ///
-/// Not yet measured: grade-adjusted pace (F7) and weather (F8). Until they
-/// exist, pace on a hilly route (climb of `AdaptationLimits.hillyClimbMetersPerKm`
-/// or more) or a treadmill is reported as not comparable with the plan's targets.
+/// Not yet measured: weather (F8). Raw pace on a hilly route (climb of
+/// `AdaptationLimits.hillyClimbMetersPerKm` or more) or a treadmill is
+/// reported as not comparable with the plan's targets. On a hilly route the
+/// grade-adjusted pace (`gradeAdjusted`, F7 part 1) is measured beside it for
+/// the debrief; no training or progression rule reads it yet (the plan
+/// engine, decoupling and the fitness anchor stay on raw, flat data).
 public struct RunMetrics: Equatable, Sendable {
     public let activityID: String
     public let movingSeconds: Double
@@ -37,6 +40,10 @@ public struct RunMetrics: Equatable, Sendable {
     public let paceNotComparableReason: String?
     /// Metres climbed per km (2 m hysteresis), nil without altitude and distance.
     public let climbMetersPerKm: Double?
+    /// Grade-adjusted pace over the key part (same scope and time weighting as
+    /// `paceSecondsPerKm`), measured only on a hilly, non-treadmill run, and
+    /// nil when altitude is missing or too patchy (`RecordedGAP`).
+    public let gradeAdjusted: RecordedGAP?
     /// Pace-to-HR decoupling, kept only for a steady run (3.3).
     public let decoupling: DecouplingResult?
     /// Power-to-HR decoupling, kept only for a steady run (3.3).
@@ -68,6 +75,7 @@ public struct RunMetrics: Equatable, Sendable {
         let windows = keyWindows(planned)
         var key: StreamMeans?
         var plannedKey: Double?
+        var keyRanges: [ClosedRange<Double>] = []
         if let windows {
             plannedKey = windows.reduce(0) { $0 + ($1.upperBound - $1.lowerBound) }
             let clipped = windows.compactMap { w -> ClosedRange<Double>? in
@@ -75,10 +83,12 @@ public struct RunMetrics: Equatable, Sendable {
                 return hi > w.lowerBound ? w.lowerBound...hi : nil
             }
             key = clipped.isEmpty ? nil : means(timeline, clipped)
+            keyRanges = clipped
         } else {
             // No prescription: the whole run after the warm-up.
             let warm = min(DecouplingOptions.default.warmUpSeconds, moving / 4)
             key = moving > warm ? means(timeline, [warm...moving]) : nil
+            if moving > warm { keyRanges = [warm...moving] }
         }
 
         let climb = climbPerKm(activity)
@@ -90,6 +100,9 @@ public struct RunMetrics: Equatable, Sendable {
             reason = "hilly route (\(climb)): raw pace is not compared until grade-adjusted pace exists (SPEC 3.6, F7)"
         }
         let pace = reason == nil ? key?.speed.map { 1000 / $0 } : nil
+        // Grade-adjusted pace only where raw pace is withheld for hills.
+        let gap = !run.isTreadmill && reason != nil && !keyRanges.isEmpty
+            ? RecordedGAP.measure(activity, windows: keyRanges) : nil
 
         func steady(_ basis: DecouplingBasis) -> DecouplingResult? {
             guard case .success(let r) = Decoupling.compute(activity.samples, basis: basis), r.isSteady == true else { return nil }
@@ -106,6 +119,7 @@ public struct RunMetrics: Equatable, Sendable {
         return RunMetrics(activityID: activity.id, movingSeconds: moving, plannedSeconds: planned?.durationSeconds,
                           key: key, plannedKeySeconds: plannedKey, paceSecondsPerKm: pace,
                           paceNotComparableReason: key?.speed == nil ? nil : reason, climbMetersPerKm: climb,
+                          gradeAdjusted: key?.speed == nil ? nil : gap,
                           decoupling: steady(.pace), powerDecoupling: steady(.power), cadenceFadePercent: fade,
                           rpe: run.rpe.flatMap { CompletedRun.validRPE.contains($0) ? $0 : nil })
     }

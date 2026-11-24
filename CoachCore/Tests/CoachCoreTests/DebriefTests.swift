@@ -185,11 +185,18 @@ final class DebriefTests: XCTestCase {
         assertDebriefContract(d)
     }
 
-    func testHillyRouteStatesRawPaceWithoutJudgingIt() throws {
+    func testHillyRouteWithoutUsableAltitudeStatesRawPaceWithoutJudgingIt() throws {
+        // A hilly route (the climb shows in the warm-up and cool-down) whose altitude drops out for
+        // every other 2 min of the session's main part: grade-adjusted pace is unavailable, so the
+        // debrief keeps stating raw pace without judging it (F7 part 1: unchanged behaviour).
         let t = F.threshold("t0", week: 0, day: 1)
-        let (d, o) = debrief(F.run(for: t, F.RunSpec(climbPerKm: 30)), planned: t, plan: [t])
+        let hilly = withSamples(F.run(for: t, F.RunSpec(climbPerKm: 30))) { s, _ in
+            if s.t >= 600, Int(s.t / 120) % 2 == 1 { s.altitude = nil }
+        }
+        let (d, o) = debrief(hilly, planned: t, plan: [t])
         let m = try XCTUnwrap(o.assessment?.metrics)
         let pace = try XCTUnwrap(d.fact("pace"))
+        XCTAssertNil(m.gradeAdjusted)
         XCTAssertEqual(pace.kind, .paceNotCompared(.hilly))
         XCTAssertNil(pace.comparison)
         XCTAssertEqual(pace.value(.climb), m.climbMetersPerKm)

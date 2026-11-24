@@ -111,7 +111,9 @@ public enum DebriefStream: String, CaseIterable, Equatable, Hashable, Sendable {
 public enum DebriefPaceSkip: Equatable, Hashable, Sendable {
     /// Treadmill pace waits for the treadmill offset (3.8, F8).
     case treadmill
-    /// Raw pace on a hilly route waits for grade-adjusted pace (3.6, F7).
+    /// Raw pace on a hilly route is not compared. Used when grade-adjusted
+    /// pace is unavailable (altitude missing or too patchy over the scope);
+    /// otherwise the debrief compares `Kind.paceGradeAdjusted` (3.6, F7).
     case hilly
 }
 
@@ -124,6 +126,11 @@ public struct DebriefFact: Equatable, Sendable {
         case run(planned: PlannedWorkout.Kind?)
         /// Pace over a scope, with the target when the plan set one.
         case pace(DebriefScope)
+        /// Grade-adjusted pace (F7 part 1, 3.6) over a scope of a hilly run,
+        /// with the target when the plan set one. Values: `pace` (the
+        /// grade-adjusted pace), `climb`, and the target and tolerance like
+        /// `.pace`. Compared with the same classifier and tolerance as a flat run.
+        case paceGradeAdjusted(DebriefScope)
         /// Pace measured but not compared with the target.
         case paceNotCompared(DebriefPaceSkip)
         /// Mean heart rate over a scope, its zone and the planned band.
