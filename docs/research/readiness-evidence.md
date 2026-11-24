@@ -13,7 +13,7 @@ Source numbers in brackets match SPEC.md section 12. [35] and [36] were already 
 | What counts as a sleep signal | Last night under 6 h asleep, or under 7 h and at least 60 min below the runner's usual (median of up to 28 earlier nights, at least 7) | [50][51][52] | Moderate that sleep loss lowers endurance performance [51]; the cut-offs are heuristics |
 | Amber, red | 2 agreeing signals: amber. 3, or 2 with 2 or more in yesterday's stored result: red. 1 signal or HRV alone: a note | [37][38][39][48][55] | Coaching practice; the trials replaced the session with low intensity or rest |
 | Pain | Shown only; 3.5 rule 7 acts on pain on its own | 3.5 rule 7, `pain-return-evidence.md` | Product decision |
-| What amber and red do | Amber: a third of the work off a quality session, long run 80% and all easy. Red: move within the week by F4's slot rule, else easy | [38][39][37][9] | No source sets an amount; heuristics |
+| What amber and red do | Amber: a third of the work off a quality session, long run 80% and all easy. Red: move within the week by SPEC 3.4 rule 10's own slot rule (stricter than F4's: long runs count as hard days, and the target must be a planned entry), else easy | [38][39][37][9] | No source sets an amount; heuristics |
 
 ## Sources read
 
@@ -80,7 +80,7 @@ What the spec takes: two lines, both heuristics. Under 6 hours asleep is short w
 - Altini [53] and HRV4Training: reduce intensity or other stress on below-normal days; no rule for moving a session.
 - Pfitzinger [9] (already in the spec): missed runs are not made up, which the spec applies to the time readiness removes.
 
-No source says how much to shorten a session or where to move it, so the amber and red actions are product heuristics built on F4's existing missed-session slot rule.
+No source says how much to shorten a session or where to move it, so the amber and red actions are product heuristics. Red's move uses SPEC 3.4 rule 10's own slot rule, modelled on F4's missed-session slot rule but stricter: long runs count as hard days, and the target must be a planned entry on an available day.
 
 ## Could not read
 
@@ -102,5 +102,6 @@ No source says how much to shorten a session or where to move it, so the amber a
 
 - `DailyHealthSample` has two kinds, resting HR (bpm) and HRV as SDNN (ms). There is no sleep kind, so #3 needs nightly asleep time from HealthKit sleep analysis.
 - `BaselineBuilder` groups readings by calendar day, takes raw values (no log), and gives a normal range of mean ± 1 SD over the 60 calendar days ending today (at least 14 days), plus a 7-day average needing 3 days. That stays the F1 baseline report's and F13 dashboard's display. Readiness needs its own figures: HRV from overnight samples grouped by night, in ln, against the 60 nights before the 7-night window, with a 0.5 SD band; resting HR against the median of the 60 days before the two latest days.
+- `GuardrailLimits.easyRunsWithinLongRun` defaults to false for adapted plans (`GuardrailChecker.swift`), so the check after a readiness change must turn it on for SPEC 3.4 rule 9's easy-run trim.
 - `PlannedWorkout.isHardDay` counts quality sessions and races only; readiness moves also count long runs as hard days (SPEC 3.4 rule 10). `PlanBuilder` emits no `.rest` entries, so in built plans a red-day swap target is a recovery or easy run.
 - `AdaptationEngine` has the missed-session slot rule (`missed`, `slot(for:today:protecting:)`), `swappedToEasyKeepingTarget`, `resized(toSeconds:)` and `GuardrailRepair`, which readiness can reuse. Readiness is not in the engine yet (its header says so).
