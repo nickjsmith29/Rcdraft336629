@@ -147,8 +147,12 @@ enum WatchWorkoutSync {
                                    metric: metric)
         case .power:
             let unit = UnitPower.watts
-            return PowerRangeAlert(target: Measurement(value: lo, unit: unit)...Measurement(value: hi, unit: unit),
-                                   metric: metric)
+            let target = Measurement(value: lo, unit: unit)...Measurement(value: hi, unit: unit)
+            // The metric choice needs iOS 17.4; earlier systems get the default (current) metric.
+            if #available(iOS 17.4, *) {
+                return PowerRangeAlert(target: target, metric: metric)
+            }
+            return PowerRangeAlert(target: target)
         }
     }
 
