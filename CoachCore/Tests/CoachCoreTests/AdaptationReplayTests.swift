@@ -42,10 +42,11 @@ final class AdaptationReplayTests: XCTestCase {
         // (SPEC 3.5 rule 6), so week 2 is held to the regrowth's bound.
         XCTAssertEqual(friday.outcome.changes.first?.kind, .sessionDropped)
         // The hand-built plan's easy runs (65 min) are longer than its long run (55 min), so the
-        // engine also holds them to F3's limit (#54), and the regrowth may then give a minute back.
+        // engine also holds them to F3's limit (#54); the changes after the drop are exactly these (the same as on main).
+        XCTAssertEqual(friday.outcome.changes.map(\.kind), [.sessionDropped, .sessionShortened])
+        XCTAssertEqual(friday.outcome.changes.map(\.workoutIDs), [["e1a"], ["e2a", "e2b"]])
         for c in friday.outcome.changes.dropFirst() {
-            XCTAssertTrue([.sessionShortened, .sessionRegrown].contains(c.kind), "\(c.kind)")
-            XCTAssertTrue(c.explanation.contains("SPEC 3.5 rule 6") || c.explanation.contains("SPEC F3 and 3.5 rule 5"), c.explanation)
+            XCTAssertTrue(c.explanation.contains("SPEC 3.5 rule 6"), c.explanation)
         }
         let t2 = outcomes.last!.plan.first { $0.id == "t2" }!
         XCTAssertEqual(t2.kind, .easy)

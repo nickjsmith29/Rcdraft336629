@@ -10,7 +10,8 @@ import Foundation
 /// its time before the cap, and keeps it once the week is history. The
 /// checker reads the week's long-run share (and a marathon plan's 35%
 /// warning and 45% ceiling) against it, and the 10% and rolling 4-week
-/// checks of the weeks after it read the week at it too, so the cut does not
+/// checks of the weeks after it read the week at it too (rule 6's bound and the
+/// rule 4 and 7 pre-break levels read the week at its own time), so the cut does not
 /// spread down the plan (`GuardrailChecker.check(regrowth:)`, which carries
 /// it in `GuardrailRegrowth.preCap`). A week with no entry is read at its
 /// own time. Heuristic, as the rest of 3.5; no study tests it.
@@ -41,9 +42,10 @@ public struct PreCapWeek: Equatable, Sendable, Codable {
     /// What the week reads as when it holds `actual` now (in `measure`): its
     /// own volume, plus the cut time that is still cut. If the week's runs
     /// were cut again, or one was dropped or missed, the reading falls with
-    /// them (the cut counts in proportion to what the week still holds), so a
-    /// later cut is never measured against time the week no longer holds; and it never reads above the
-    /// time before the cap, so time regrown into the capped runs is not
+    /// them (the cut counts in proportion to what the week still holds; this
+    /// proportional reading is a heuristic of this implementation, which the
+    /// spec does not give), so a later cut is never measured against time the
+    /// week no longer holds; and it never reads above the time before the cap, so time regrown into the capped runs is not
     /// counted twice. Never below `actual`. A value that isn't a finite
     /// number reads as `actual`.
     func reading(of actual: Double, _ measure: VolumeMeasure) -> Double {

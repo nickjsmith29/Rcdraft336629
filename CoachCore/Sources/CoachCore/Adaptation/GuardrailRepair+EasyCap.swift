@@ -84,7 +84,11 @@ extension GuardrailRepair {
     /// without its extension: the warm-up, the hard part and the planned
     /// cool-down stay. (Conservative reading of "cut to that length": F3 lets
     /// a session grow by easy running only up to the week's long run.) The
-    /// time cut is dropped, never given to other runs. Nil when nothing is
+    /// time cut is dropped, never given to other runs. Rounding down to whole
+    /// minutes can leave the cut week's long-run share a hair over 1 / (1 + n)
+    /// for n runs shortened (a long run of 36.5 min, one easy run: 36.5 / 72.5
+    /// is 50.3%, not 50%); the week is read at its time before the cap, so that
+    /// is never a violation. Nil when nothing is
     /// longer than the long run, or the week has no long run.
     static func capEasyRuns(week: Date, plan: [PlannedWorkout], history: [PlannedWorkout], asOf: Date,
                             longRunCut: LongRunCut, preCap: GuardrailPreCap,

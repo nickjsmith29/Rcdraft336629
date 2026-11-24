@@ -83,8 +83,9 @@ final class AdaptationRegrowthTests: XCTestCase {
         let minute = 60.0
         // Ramp week 1: the lower of 70% of the pre-break level and of the original week.
         XCTAssertGreaterThanOrEqual(w12, 0.9 * min(0.7 * pre, 0.7 * volume(12, original)), "\(ran)")
-        // Ramp week 2: also at most 90/70 of week 1.
-        XCTAssertGreaterThanOrEqual(w13, 0.9 * min(0.9 * pre, 0.9 / 0.7 * w12, 0.9 * volume(13, original)), "\(ran)")
+        // Ramp week 2: also at most 90/70 of week 1, read at its own time (rules 4 and 6 do not
+        // read a capped week at its time before the cap).
+        XCTAssertGreaterThanOrEqual(w13, 0.9 * min(0.9 * pre, 0.9 / 0.7 * volume(12, d.history), 0.9 * volume(13, original)), "\(ran)")
         XCTAssertGreaterThanOrEqual(volume(14, d.history), 0.8 * w13 - 5 * minute, "a recovery week at the least, \(ran)")
         XCTAssertGreaterThanOrEqual(volume(15, d.history), 1.1 * w13 - 5 * minute, "\(ran)")
         XCTAssertTrue(d.outcomes.contains { !$0.regrowth.weeks.isEmpty })

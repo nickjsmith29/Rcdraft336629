@@ -584,6 +584,7 @@ public enum GuardrailChecker {
         /// a recovery week: a week cut by a cap is as light as it really is (#54).
         let ownVolumes: [Double?]
         let ownOutside: [Double?]
+        let ownOutsideLows: [Double]
         var violations: [GuardrailViolation] = []
         var skips: [GuardrailSkip] = []
         var flags: [GuardrailFlag] = []
@@ -610,6 +611,7 @@ public enum GuardrailChecker {
             self.capExtraTime = weeks.map { extra($0, .time) }
             self.ownVolumes = weeks.map { $0.volume(limits.measure) }
             self.ownOutside = weeks.map { $0.volumeOutsideRaces(limits.measure) }
+            self.ownOutsideLows = weeks.map { $0.knownVolumeOutsideRaces(limits.measure) }
             self.volumes = zip(weeks, extras).map { w, e in w.volume(limits.measure).map { $0 + e } }
             self.lows = zip(weeks, extras).map { w, e in w.knownVolume(limits.measure) + (w.volume(limits.measure) == nil ? 0 : e) }
             self.outside = zip(weeks, extras).map { w, e in w.volumeOutsideRaces(limits.measure).map { $0 + e } }
@@ -617,7 +619,9 @@ public enum GuardrailChecker {
                 w.knownVolumeOutsideRaces(limits.measure) + (w.volumeOutsideRaces(limits.measure) == nil ? 0 : e)
             }
             self.raceWeeks = Set(weeks.indices.filter { weeks[$0].hasRace })
-            self.breaks = GuardrailChecker.breaks(volumes: outside, lows: outsideLows, raceWeeks: raceWeeks, limits: limits)
+            // Only the share, the 10% check and the rolling check read a capped week at its time
+            // before the cap (3.5 rules 3 and 5, #54); breaks and rules 4, 6 and 7 read its own.
+            self.breaks = GuardrailChecker.breaks(volumes: ownOutside, lows: ownOutsideLows, raceWeeks: raceWeeks, limits: limits)
             self.marathon = GuardrailChecker.marathonWeeks(weeks)
         }
 
@@ -696,7 +700,7 @@ public enum GuardrailChecker {
             // ceilings and the spike rule bound the weeks back, not rule 2's
             // checks or rule 4's ramp measured from the stop weeks (3.5 rule 7).
             if let g = regrowthWeeks[i], g.maxRise == nil { return checkRegrowth(i, g, volume: v, known: known) }
-            if let ramp = GuardrailChecker.returnRamp(i, volumes: outside, lows: outsideLows, breaks: breaks, limits: limits) {
+            if let ramp = GuardrailChecker.returnRamp(i, volumes: ownOutside, lows: ownOutsideLows, breaks: breaks, limits: limits) {
                 return checkReturnRamp(i, ramp, volume: v, known: known, regrowth: regrowthWeeks[i])
             }
             if let g = regrowthWeeks[i] { return checkRegrowth(i, g, volume: v, known: known) }
@@ -767,7 +771,7 @@ public enum GuardrailChecker {
         /// never above the original plan's week. Nil when the week
         /// before is unknown and the week has a weekly bound.
         func regrowthCap(_ i: Int, _ g: GuardrailRegrowth.Week) -> Double? {
-            g.allowed(previous: i >= 1 ? outside[i - 1] : nil)
+            g.allowed(previous: i >= 1 ? ownOutside[i - 1] : nil)
         }
 
         func regrowthWhy(_ i: Int, _ g: GuardrailRegrowth.Week, cap: Double) -> String {
@@ -775,7 +779,7 @@ public enum GuardrailChecker {
             guard let rise = g.maxRise else {
                 return "this is week \(g.step) back after a pain stop of more than 14 days, bounded by the original plan and the return's own ceilings (\(plan))"
             }
-            let before = i >= 1 ? (outside[i - 1] ?? 0) : 0
+            let before = i >= 1 ? (ownOutside[i - 1] ?? 0) : 0
             let share = PlanFormatting.percent(g.stepShare)
             let level = "week \(g.step)'s return step of \(share) of the original plan (\(vol(g.stepShare * g.original)))"
             guard before > 0 else {
@@ -829,7 +833,7 @@ public enum GuardrailChecker {
             if ramp.limitedByWeekBefore, ramp.step >= 2 {
                 let steps = limits.breakReturnSteps
                 let rise = PlanFormatting.percent(steps[ramp.step - 1] / steps[ramp.step - 2] - 1)
-                why += ", and at most \(rise) more than the week before (\(vol(outside[i - 1] ?? outsideLows[i - 1]))), as the ramp itself rises"
+                why += ", and at most \(rise) more than the week before (\(vol(ownOutside[i - 1] ?? ownOutsideLows[i - 1]))), as the ramp itself rises"
             }
             violate(.weeklyIncrease, i, measured: v, allowed: ramp.allowed, unit: unit,
                     "volume\(outsideNote(i)) \(atLeast(known))\(vol(v))\(knownNote(known)) is above the return ramp: \(why), so at most \(vol(ramp.allowed)).")
@@ -944,7 +948,7 @@ public enum GuardrailChecker {
             let count = weeks[i].workouts.filter { $0.kind.isQuality || (limits.racesCountAsQuality && $0.kind == .race) }.count
             let races = limits.racesCountAsQuality ? " (races count as quality sessions)" : ""
             // Weeks 1 and 2 back after a short break hold fewer (3.5 rule 4).
-            if let ramp = GuardrailChecker.returnRamp(i, volumes: outside, lows: outsideLows, breaks: breaks, limits: limits),
+            if let ramp = GuardrailChecker.returnRamp(i, volumes: ownOutside, lows: ownOutsideLows, breaks: breaks, limits: limits),
                let allowed = limits.returnRampMaxQuality(step: ramp.step) {
                 guard count > allowed else { return }
                 let off = ramp.brk.length == 1 ? "a week" : "\(ramp.brk.length) weeks"

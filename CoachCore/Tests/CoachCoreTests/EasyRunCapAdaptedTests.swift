@@ -103,6 +103,90 @@ final class EasyRunCapAdaptedTests: XCTestCase {
         return ctx
     }
 
+    // MARK: A new plan for a capped week
+
+    /// The week-4 entry (92 min before the cap, 28 cut) belongs to the adapted
+    /// plan it was recorded for. A fresh plan for that week (new ids: easy 25,
+    /// easy 20, long 30, 75 min, a 40% share) is read at its own time. Worked:
+    /// amount = (30 - 0.35 x 75) / 0.65 = 5.77 min, so the long run falls to
+    /// 24.23, 24 whole minutes; the 25 min run is capped at 24, the 20 min run
+    /// stays. Week 4 then holds 68 min (69 before this cap); week 5's 90 min is
+    /// a 30% rise over it, so it is cut, which the old entry's 92 min would have
+    /// let through (92 x 1.1 = 101.2).
+    func testANewPlanForACappedWeekIsReadAtItsOwnTime() throws {
+        let (plan, hist) = threeDayWeek()
+        let first = AdaptationEngine.processDay(asOf: F.date(week: 4, day: 1, hour: 6), state: AdaptationState(),
+                                                plan: plan, history: hist, context: context())
+        let week4 = PlanCalendar.weekStart(containing: F.date(week: 4, day: 0), timeZone: tz)
+        XCTAssertEqual(first.state.preCap.week(week4)?.secondsBeforeCap, 92 * 60)
+        let fresh = [F.easy("n1", week: 4, day: 2, minutes: 25), F.easy("n2", week: 4, day: 3, minutes: 20),
+                     F.long("n3", week: 4, day: 5, minutes: 30)]
+            + (0..<3).map { F.easy("m\($0)", week: 5, day: $0 * 2, minutes: 30) }
+        // Earlier weeks of 60, 120, 120 and 70 min: week 4's own 69 min is not a recovery week
+        // (over 80% of 70), so week 5 is held to 10% over it, 75.9 min, not over the old 92.
+        let hist2 = history([60, 120, 120, 70])
+        let o = AdaptationEngine.processDay(asOf: F.date(week: 4, day: 1, hour: 12), state: first.state,
+                                            plan: fresh, history: hist2, context: context())
+        XCTAssertEqual(minutes(find("n3", o.plan)), 24, "the share is read at the week's own 75 min, not the old 92")
+        XCTAssertEqual(minutes(find("n1", o.plan)), 24)
+        XCTAssertEqual(minutes(find("n2", o.plan)), 20)
+        let entry = try XCTUnwrap(o.state.preCap.week(week4))
+        XCTAssertEqual(entry.secondsBeforeCap, 69 * 60, "a new entry for the new plan, not the old 92")
+        XCTAssertLessThan(F.weekVolume(5, o.plan), 90 * 60, "week 5 is held to 10% over week 4's own time")
+        XCTAssertLessThanOrEqual(F.weekVolume(5, o.plan), 1.1 * 69 * 60 + 1e-6)
+        // Weeks before the new plan are history and keep their entries.
+        var state = first.state
+        state.preCap = GuardrailPreCap(weeks: [PreCapWeek(weekStart: PlanCalendar.weekStart(containing: F.date(week: 2, day: 0), timeZone: tz),
+                                                           secondsBeforeCap: 100, secondsCut: 10)])
+        let kept = AdaptationEngine.processDay(asOf: F.date(week: 4, day: 1, hour: 12), state: state,
+                                               plan: fresh, history: hist2, context: context())
+        XCTAssertEqual(kept.state.preCap.weeks.first?.secondsBeforeCap, 100)
+    }
+
+    // MARK: The share bound with two capped runs, and rounding
+
+    /// The share cut can only cap one run: with 35% the long run stays above
+    /// 0.35 x others / 0.65, more than half of the other runs together, so two
+    /// easy runs cannot both be longer than it. A cut by the load guardrails can
+    /// leave two: easy 50 and 50 beside a long run cut to 36. The cap takes both
+    /// to 36: the week holds 108 and the long run is 36/108 = 1/3 = 1/(1 + 2),
+    /// n = 2 runs shortened. Before the cap it held 136 (cut 28).
+    func testTwoCappedRunsLeaveTheLongRunAtOneThirdOfTheWeek() throws {
+        let plan = [F.easy("a", week: 4, day: 1, minutes: 50), F.easy("b", week: 4, day: 2, minutes: 50),
+                    F.long("sat", week: 4, day: 5, minutes: 36)]
+        let week = PlanCalendar.weekStart(containing: F.date(week: 4, day: 0), timeZone: tz)
+        let cap = try XCTUnwrap(GuardrailRepair.capEasyRuns(week: week, plan: plan, history: [], asOf: F.date(week: 4, day: 0, hour: 6),
+                                                            longRunCut: .guardrails, preCap: .none, context: contextWithLimit()))
+        for id in ["a", "b", "sat"] { XCTAssertEqual(minutes(find(id, cap.plan)), 36, id) }
+        XCTAssertEqual(F.weekVolume(4, cap.plan) / 60, 108)
+        XCTAssertEqual(36.0 / 108, 1.0 / (1 + 2), accuracy: 1e-12)
+        let entry = try XCTUnwrap(cap.preCap.weeks.first)
+        XCTAssertEqual(entry.secondsBeforeCap, 136 * 60)
+        XCTAssertEqual(entry.secondsCut, 28 * 60)
+        XCTAssertEqual(cap.changes.first?.workoutIDs, ["a", "b"])
+        XCTAssertTrue(cap.changes.first?.explanation.contains("stay inside the load guardrails") ?? false)
+    }
+
+    /// A long run of 36.5 min (a handed-in plan) with an easy run of 50: the cap
+    /// is the long run's whole minutes, 36, so the easy run is 36 and the long run
+    /// 36.5. Rounding down keeps every run at most the long run, but the share
+    /// of the smaller week, 36.5 / 72.5 = 50.3%, is a hair over 1 / (1 + 1) =
+    /// 50% (n = 1). That is the cost of whole minutes; the week is read at its
+    /// 86.5 min before the cap (42.2%), so no second repair follows.
+    func testAFractionalLongRunCapsAtWholeMinutesAndTheShareIsReadBeforeTheCap() throws {
+        let plan = [F.easy("e", week: 4, day: 1, minutes: 50), F.long("l", week: 4, day: 5, minutes: 36.5)]
+        let week = PlanCalendar.weekStart(containing: F.date(week: 4, day: 0), timeZone: tz)
+        let cap = try XCTUnwrap(GuardrailRepair.capEasyRuns(week: week, plan: plan, history: [], asOf: F.date(week: 4, day: 0, hour: 6),
+                                                            longRunCut: .none, preCap: .none, context: contextWithLimit()))
+        XCTAssertEqual(minutes(find("e", cap.plan)), 36)
+        XCTAssertEqual(minutes(find("l", cap.plan)), 36.5)
+        XCTAssertGreaterThan(36.5 / 72.5, 1.0 / (1 + 1), "whole-minute rounding puts the smaller week's share a hair over 1/(1+n)")
+        let entry = try XCTUnwrap(cap.preCap.weeks.first)
+        XCTAssertEqual(entry.secondsBeforeCap, 86.5 * 60)
+        XCTAssertEqual(entry.secondsCut, 14 * 60)
+        XCTAssertEqual(entry.reading(of: 72.5 * 60, .time) / 60, 86.5, accuracy: 1e-9)
+    }
+
     // MARK: Marathon ceilings are read before the cap
 
     /// Week 4: easy Tuesday 60, long Saturday 100 (160 min, 62.5%), and a
