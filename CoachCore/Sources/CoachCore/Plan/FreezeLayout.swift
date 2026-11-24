@@ -51,6 +51,9 @@ enum FreezeLayout {
         let workouts: [PlannedWorkout]
         /// Laid out again for new days or a new longest session.
         let relaid: Bool
+        /// The week's time before the easy runs were capped at the cut long run, and after (seconds, the race
+        /// included), when the cap cut anything (`GuardrailPreCap`, 3.5 rule 5, #54).
+        var cap: (before: Double, after: Double)? = nil
     }
 
     static func lay(held: [PlannedWorkout], weekStart: Date, _ ctx: Context) -> Outcome {
@@ -161,26 +164,29 @@ enum FreezeLayout {
         let budget = ctx.race.map { max(0, limit - seconds($0)) } ?? limit
         list = shrink(list, to: budget)
 
-        // A week laid out again keeps the long run's share (3.5 rule 5), and no easy or recovery run is longer
-        // than the week's long run (F3, 3.5 rule 5, #54): the long run is cut to its share, the easy runs cut to
-        // the long run, the cut time dropped (never shared out), until both hold. Each pass only shortens.
+        // A week laid out again keeps the long run's share (3.5 rule 5) and no easy or recovery run is longer
+        // than the week's long run (F3, #54), in the one-pass order of #94: the share is read once, the long run
+        // cut to it, the easy runs capped at the cut long run, the cut time dropped (not shared out). No run goes
+        // below the easy-run floor. The week's time before the cap is returned (`Outcome.cap`): the checker reads
+        // the share against it, so the cap does not break the share again.
         let share = ctx.limits.maxLongRunShare
+        let raceSeconds = ctx.race.map(seconds) ?? 0
+        let floor = PlanHeuristics.minimumEasyRunSeconds
+        var easyCap: (before: Double, after: Double)?
         if let l = list.firstIndex(where: { $0.kind == .long }) {
-            for _ in 0..<50 {
-                var changed = false
-                let total = list.reduce(0.0) { $0 + seconds($1) }
-                let rest = total - seconds(list[l])
-                if share > 0, share < 1, rest > 0, seconds(list[l]) > share * total * (1 + 1e-9) {
-                    list[l] = scaled(list[l], to: share * rest / (1 - share) * (1 - 1e-9), why: "the long run stays within its share of the week")
-                    changed = true
-                }
-                let longSeconds = seconds(list[l])
-                for i in list.indices where (list[i].kind == .easy || list[i].kind == .recovery) && seconds(list[i]) > longSeconds {
-                    list[i] = scaled(list[i], to: longSeconds, why: "an easy run stays within the long run")
-                    changed = true
-                }
-                if !changed { break }
+            let total = list.reduce(0.0) { $0 + seconds($1) }
+            let rest = total - seconds(list[l])
+            if share > 0, share < 1, rest > 0, seconds(list[l]) > share * total * (1 + 1e-9) {
+                let target = max(share * rest / (1 - share) * (1 - 1e-9), min(seconds(list[l]), floor))
+                list[l] = scaled(list[l], to: target, why: "the long run stays within its share of the week")
             }
+            let before = list.reduce(0.0) { $0 + seconds($1) } + raceSeconds
+            let longSeconds = seconds(list[l])
+            for i in list.indices where (list[i].kind == .easy || list[i].kind == .recovery) && seconds(list[i]) > longSeconds {
+                list[i] = scaled(list[i], to: max(longSeconds, min(seconds(list[i]), floor)), why: "an easy run stays within the long run")
+            }
+            let after = list.reduce(0.0) { $0 + seconds($1) } + raceSeconds
+            if before - after > 1e-6 { easyCap = (before, after) }
         }
 
         // The race counts as a quality session when the limits say so (3.5 rule 3).
@@ -190,7 +196,7 @@ enum FreezeLayout {
                 list[last] = list[last].swappedToEasyKeepingTarget(reason: "your race is in this week and your pain freeze holds it (SPEC 3.5 rule 7).")
             }
         }
-        return Outcome(workouts: list.sorted { $0.date < $1.date }, relaid: needsLayout)
+        return Outcome(workouts: list.sorted { $0.date < $1.date }, relaid: needsLayout, cap: easyCap)
     }
 
     /// The sessions cut in proportion until they add up to at most `budget`,

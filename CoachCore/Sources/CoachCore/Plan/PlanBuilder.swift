@@ -353,7 +353,8 @@ public enum PlanBuilder {
     /// cool-down, to compare against (#113).
     static func buildDiagnosed(_ input: PlanInput, history: [PlannedWorkout] = [], timeZone: TimeZone,
                                limits: GuardrailLimits = .default, diagnose: Bool = true,
-                               shortenWarmUps: Bool = true, heldWeeks: Int = 0, firstWeekCap: Double = .infinity)
+                               shortenWarmUps: Bool = true, heldWeeks: Int = 0, firstWeekCap: Double = .infinity,
+                               baselineEnd: Date? = nil)
         -> (result: PlanBuildResult, weeks: [WeekVolumeDiagnostic]) {
         let validated: Validated
         // Everything done before the start counts, including runs earlier on
@@ -363,11 +364,10 @@ public enum PlanBuilder {
         case .failure(let issues): return (.cannotBuild(issues.list), [])
         case .success(let v): validated = v
         }
-        var builder = Builder(input: input, v: validated, timeZone: timeZone, limits: limits, history: past)
+        var builder = Builder(input: input, v: validated, timeZone: timeZone, limits: limits, history: past, baselineEnd: baselineEnd)
         builder.diagnose = diagnose
         builder.shortenWarmUps = shortenWarmUps
         builder.firstWeekCap = firstWeekCap
-        builder.heldWeeks = heldWeeks
         // An open start week with a session of unknown time (#40) is only known
         // to hold what was logged so far, which can leave no workable first
         // week. Once it is over, all of its other runs count: build then.
@@ -378,11 +378,10 @@ public enum PlanBuilder {
         // places, refuses that plan, the plain reading is tried (heuristic, #32).
         if builder.wideDaysApplies, case .cannotBuild(let issues) = result,
            issues.contains(where: { if case .failsGuardrails = $0 { return true }; return false }) {
-            var narrow = Builder(input: input, v: validated, timeZone: timeZone, limits: limits, history: past, wideDays: false)
+            var narrow = Builder(input: input, v: validated, timeZone: timeZone, limits: limits, history: past, wideDays: false, baselineEnd: baselineEnd)
             narrow.diagnose = diagnose
             narrow.shortenWarmUps = shortenWarmUps
             narrow.firstWeekCap = firstWeekCap
-            narrow.heldWeeks = heldWeeks
             let narrowResult = narrow.run()
             if narrowResult.plan != nil { builder = narrow; result = narrowResult }
         }
@@ -1210,12 +1209,9 @@ private struct Builder {
     /// freeze holds, measured from the last of them (`FreezeHold`, 3.5 rule 7,
     /// #72). Infinite for every other plan.
     var firstWeekCap = Double.infinity
-    /// Weeks held by a pain freeze before this plan's first week (#72). Their sessions are in `history`, but they are
-    /// the freeze's smaller weeks, not the runner's own level, so the baseline-against-history check skips them.
-    var heldWeeks = 0
 
     init(input: PlanInput, v: PlanBuilder.Validated, timeZone: TimeZone, limits: GuardrailLimits, history: [PlannedWorkout],
-         wideDays: Bool = true) {
+         wideDays: Bool = true, baselineEnd: Date? = nil) {
         self.input = input
         self.v = v
         self.timeZone = timeZone
@@ -1268,7 +1264,7 @@ private struct Builder {
                                           raceWeeks: weekRaces,
                                           lastWeekOpen: open,
                                           recentWeekly: v.recentWeekly, limits: limits, longerByDays: byDays)
-        let complete = weeks.filter { $0.weekStart < startWeek }.suffix(4).compactMap { $0.volume(.time) }
+        let complete = weeks.filter { $0.weekStart < min(startWeek, baselineEnd ?? startWeek) }.suffix(4).compactMap { $0.volume(.time) }
         self.historyMean = complete.isEmpty ? nil : complete.reduce(0, +) / Double(complete.count)
         self.returnPaces = ReturnPaceSchedule.latest(history: history, efforts: input.anchorEfforts,
                                                      raceDistanceMeters: input.raceDistanceMeters,
@@ -1805,7 +1801,7 @@ private struct Builder {
         let raceWeek = n - 1
         let anchor = H.taperWeeks(c) == 1 ? raceWeek : raceWeek - 1
 
-        if heldWeeks == 0, let mean = historyMean, v.recentWeekly > max(1.5 * mean, mean + 3600) {
+        if let mean = historyMean, v.recentWeekly > max(1.5 * mean, mean + 3600) {
             return .cannotBuild([.recentVolumeDisagreesWithHistory(recentWeeklySeconds: v.recentWeekly, historyWeeklySeconds: mean)])
         }
         if ledger.openWithoutReference {

@@ -95,6 +95,11 @@ public struct FreezeEditSummary: Equatable, Sendable {
     /// The day of the rebuilt plan's session that took a pending quality swap
     /// (`FreezeHold.pendingSwap`), when there was one to place.
     public let swapLandsOn: Date?
+    /// The frozen weeks whose easy runs were capped at a cut long run when a week was laid out again, with the
+    /// time they held before the cap (3.5 rule 5, #54). The checker reads those weeks at that time
+    /// (`GuardrailRegrowth.preCap`), so a caller that checks the plan again, or the adaptation engine that takes
+    /// it over, should pass these along (empty for most edits).
+    public var preCap: GuardrailPreCap = .none
 
     /// The first day of the freezes (the earliest start), or nil with none.
     public var freezeStart: Date? { freezes.map(\.start).min() }

@@ -73,6 +73,7 @@ extension PlanBuilder {
         var frozen: [TrainingPlanWeek] = []
         var heldPhases: [PlanPhase?] = []
         var relaid: [Date] = []
+        var preCap = GuardrailPreCap.none
         var raceWeekStart: Date?
         var j = 0
         while j < starts.count, overlaps(starts[j]) {
@@ -96,6 +97,9 @@ extension PlanBuilder {
                                            hardOutside: outside)
             let laid = FreezeLayout.lay(held: held, weekStart: ws, ctx)
             if laid.relaid { relaid.append(ws) }
+            if let c = laid.cap {
+                preCap = preCap.recording(weekStart: ws, secondsBefore: c.before, secondsAfter: c.after, metersBefore: nil, metersAfter: nil)
+            }
             var workouts = laid.workouts
             if isRaceWeek { workouts.append(race); raceWeekStart = ws }
             previousVolume = workouts.reduce(0.0) { $0 + max(0, $1.durationSeconds.isFinite ? $1.durationSeconds : 0) }
@@ -132,10 +136,13 @@ extension PlanBuilder {
             // The first week after the freeze is measured from the last frozen week itself (3.5 rule 7): it may
             // hold no more than the weekly rise over it, even where that week reads as a recovery week and
             // rule 2 would measure from the week before it (heuristic, the conservative reading, #72).
-            let lastFrozen = frozen[k - 1].workouts.filter { $0.kind != .race }.reduce(0.0) { $0 + max(0, $1.durationSeconds.isFinite ? $1.durationSeconds : 0) }
+            let lastOwn = frozen[k - 1].workouts.filter { $0.kind != .race }.reduce(0.0) { $0 + max(0, $1.durationSeconds.isFinite ? $1.durationSeconds : 0) }
+            // A week capped at its long run is read at its time before the cap (3.5 rule 5, #54).
+            let lastFrozen = lastOwn + preCap.extra(frozen[k - 1].weekStart, actual: lastOwn, .time)
             let result = buildDiagnosed(after, history: past + carried + frozenSessions, timeZone: timeZone, limits: limits,
                                         diagnose: false, heldWeeks: k,
-                                        firstWeekCap: lastFrozen * (1 + limits.maxWeeklyIncrease)).result
+                                        firstWeekCap: lastFrozen * (1 + limits.maxWeeklyIncrease),
+                                        baselineEnd: PlanCalendar.weekStart(containing: input.startDate, timeZone: timeZone)).result
             guard case .plan(let tail) = result else { return (result, nil) }
             notes = tail.notes
             built = tail.weeks.map { w in
@@ -179,7 +186,7 @@ extension PlanBuilder {
                                                 PlanHeuristics.longRunCap(v.category, isMarathonDistance: RaceCategory.isMarathonDistance(meters: input.raceDistanceMeters)))
         checkLimits.easyRunsWithinLongRun = true
         let report = GuardrailChecker.check(history: checked, planned: planned, timeZone: timeZone, limits: checkLimits,
-                                            freezes: hold.freezes)
+                                            freezes: hold.freezes, regrowth: GuardrailRegrowth(preCap: preCap))
         guard report.passed else { return (.cannotBuild([.failsGuardrails(report)]), nil) }
 
         // Label the frozen weeks the way the checker reads recovery weeks.
@@ -197,7 +204,7 @@ extension PlanBuilder {
         let summary = FreezeEditSummary(freezes: hold.freezes, frozenWeekStarts: frozen.map(\.weekStart),
                                         relaidWeekStarts: relaid, raceWeekStart: raceWeekStart,
                                         firstGrowthWeekStart: k < starts.count ? starts[k] : nil,
-                                        swapLandsOn: swapLandsOn)
+                                        swapLandsOn: swapLandsOn, preCap: preCap)
         let count = k == 1 ? "The first week is" : "The first \(k) weeks are"
         notes.append("\(count) held by your pain freeze at the volume and sessions they had, until it ends; growth toward your goal starts after them (SPEC 3.5 rule 7).")
         var rebuildDate: Date?

@@ -29,7 +29,8 @@ final class GoalFreezeEditTests: XCTestCase {
     /// The checker, run again from outside with the freeze in force and the rest of this week as the old plan keeps it.
     func assertPasses(_ p: GoalPlan, freezes: [DateInterval]? = nil, file: StaticString = #filePath, line: UInt = #line) {
         let again = GuardrailChecker.check(history: p.history + FreezeFixture.currentWeekRest, planned: p.plan.workouts,
-                                           timeZone: tz, freezes: freezes ?? [freeze])
+                                           timeZone: tz, freezes: freezes ?? [freeze],
+                                           regrowth: GuardrailRegrowth(preCap: p.freezeEdit?.preCap ?? .none))
         XCTAssertTrue(again.passed, "\(again.violations)", file: file, line: line)
         XCTAssertTrue(p.guardrailReport.passed, file: file, line: line)
     }
@@ -196,7 +197,8 @@ final class GoalFreezeEditTests: XCTestCase {
         XCTAssertLessThanOrEqual(week.trainingSeconds, 85 * 60 + 0.5)
         XCTAssertTrue(week.workouts.allSatisfy { days.contains(PlanWeekday(of: $0.date, timeZone: tz)) })
         let again = GuardrailChecker.check(history: p.history + [FreezeFixture.currentWeekRest[2]], planned: p.plan.workouts,
-                                           timeZone: tz, freezes: [freeze])
+                                           timeZone: tz, freezes: [freeze],
+                                           regrowth: GuardrailRegrowth(preCap: p.freezeEdit?.preCap ?? .none))
         XCTAssertTrue(again.passed, "\(again.violations)")
     }
 
@@ -274,13 +276,23 @@ final class GoalFreezeEditTests: XCTestCase {
         }
         let hold = FreezeHold(freezes: [DateInterval(start: freeze.start, end: FreezeFixture.at(week: 2, day: .tuesday))],
                               sessions: FreezeFixture.currentWeekRest + week(1) + week(2))
-        for days: Set<PlanWeekday> in [[.tuesday, .thursday, .sunday], [.monday, .wednesday, .sunday]] {
+        // The second set keeps only Sunday of the old week's rest (85 minutes with Monday's run): the frozen week is cut to it.
+        for (days, expected): (Set<PlanWeekday>, Double) in [([.tuesday, .thursday, .sunday], 1938.46), ([.monday, .wednesday, .sunday], 1647.69)] {
             let s = GoalFixture.settings(weeksAhead: 14, days: days, longRunDay: .sunday, pain: .recurring(areas: ["shin"]))
             let r = GoalPlanner.replan(from: old, previousPlan: nil, to: s, baseline: report, today: today, freeze: hold)
             let p = try built(r)
             XCTAssertEqual(p.freezeEdit?.frozenWeekStarts.count, 2)
             XCTAssertTrue(p.plan.weeks.prefix(2).allSatisfy { $0.trainingSeconds <= 100 * 60 + 0.5 })
             XCTAssertGreaterThan(p.plan.weeks.count, 3)
+            // Hand-worked: 30 + 30 + long 40; the long run is cut to 0.35 x 60 / 0.65 = 32.31 minutes, which no
+            // easy run (30) passes, so nothing is capped. The week after rises at most 10% over 92.31 minutes.
+            let long = try XCTUnwrap(p.plan.weeks[0].workouts.first { $0.kind == .long })
+            XCTAssertEqual(long.durationSeconds, expected, accuracy: 0.01)
+            XCTAssertNil(p.freezeEdit?.preCap.week(p.plan.weeks[0].weekStart))
+            let after = p.plan.weeks[2].trainingSeconds
+            XCTAssertGreaterThan(after, 3000)
+            let lastOwn = p.plan.weeks[1].trainingSeconds
+            XCTAssertLessThanOrEqual(after, lastOwn * 1.1 + 0.5)
         }
     }
 
@@ -292,17 +304,80 @@ final class GoalFreezeEditTests: XCTestCase {
         assertPasses(p)
         let week = p.plan.weeks[0]
         let long = try XCTUnwrap(week.workouts.first { $0.kind == .long })
-        XCTAssertLessThan(long.durationSeconds, 40 * 60, "the long run's share of the week was cut")
+        // Hand-worked: Saturday has no free day and is dropped; Tue 25 + Thu 30 = 55 minutes, so the long run is cut to
+        // 0.35 x 55 / 0.65 = 29.615 minutes (1776.92 s), the Thursday run capped at it, the cut time dropped.
+        XCTAssertEqual(long.durationSeconds, 1776.923, accuracy: 0.01)
+        XCTAssertEqual(week.workouts.first { $0.id == "old-w1-tue" }?.durationSeconds, 25 * 60)
+        XCTAssertEqual(week.workouts.first { $0.id == "old-w1-thu" }?.durationSeconds ?? 0, 1776.923, accuracy: 0.01)
+        XCTAssertEqual(week.workouts.count, 3)
+        // The week is read at its time before the cap (29.615 + 25 + 30 = 84.615 minutes), so the share holds, once.
+        let entry = try XCTUnwrap(p.freezeEdit?.preCap.week(week.weekStart))
+        XCTAssertEqual(entry.secondsBeforeCap, 5076.923, accuracy: 0.01)
+        XCTAssertEqual(entry.secondsCut, 5076.923 - (2 * 1776.923 + 1500), accuracy: 0.01)
+        // The week after is not collapsed: at most the rise over the pre-cap week, and a real week.
+        XCTAssertLessThanOrEqual(p.plan.weeks[1].trainingSeconds, 5076.923 * 1.1 + 0.5)
+        XCTAssertGreaterThan(p.plan.weeks[1].trainingSeconds, 3000)
         let easy = week.workouts.filter { $0.kind == .easy || $0.kind == .recovery }
         XCTAssertFalse(easy.isEmpty)
-        XCTAssertTrue(easy.allSatisfy { $0.durationSeconds <= long.durationSeconds + 0.01 }, "\(week.workouts.map(\.durationSeconds))")
-        // The Thursday run was 30 minutes: cut to the long run's length, the cut time dropped, not shared out.
-        XCTAssertEqual(week.workouts.first { $0.id == "old-w1-thu" }?.durationSeconds, long.durationSeconds)
+        XCTAssertTrue(easy.allSatisfy { $0.durationSeconds <= long.durationSeconds }, "\(week.workouts.map(\.durationSeconds))")
         XCTAssertLessThanOrEqual(week.trainingSeconds, 120 * 60)
         let limits = { () -> GuardrailLimits in var l = GuardrailLimits.default; l.easyRunsWithinLongRun = true; return l }()
         let again = GuardrailChecker.check(history: p.history + FreezeFixture.currentWeekRest, planned: p.plan.workouts,
-                                           timeZone: tz, limits: limits, freezes: [freeze])
+                                           timeZone: tz, limits: limits, freezes: [freeze],
+                                           regrowth: GuardrailRegrowth(preCap: p.freezeEdit?.preCap ?? .none))
         XCTAssertFalse(again.violations.contains { $0.rule == .easyRunLength }, "\(again.violations)")
+    }
+
+    /// Rule 5's one-pass order: the long run is cut to its share once, the easy runs capped at it, the cut time dropped.
+    func testTheShareAndTheEasyCapAreOnePassAndTheWeekKeepsItsTimeBeforeTheCap() {
+        let week = FreezeFixture.monday(week: 1)
+        let held = FreezeFixture.frozenWeek   // Tue 25, Thu 30 (easy), Sat 25, Sun long 40
+        let days: Set<PlanWeekday> = [.tuesday, .thursday, .sunday]
+        for ceiling in [nil, 70.0 * 60 * 1.5] {
+            var ctx = layoutContext(days: days, hardOutside: [])
+            ctx = FreezeLayout.Context(input: ctx.input, limits: ctx.limits, timeZone: tz, moveLongRun: false, race: nil,
+                                       ceiling: ceiling, hardOutside: [])
+            let out = FreezeLayout.lay(held: held, weekStart: week, ctx)
+            let by = Dictionary(uniqueKeysWithValues: out.workouts.map { ($0.id, $0.durationSeconds) })
+            XCTAssertEqual(by["old-w1-sun"] ?? 0, 1776.923, accuracy: 0.01)
+            XCTAssertEqual(by["old-w1-thu"] ?? 0, 1776.923, accuracy: 0.01)
+            XCTAssertEqual(by["old-w1-tue"], 1500)
+            XCTAssertNil(by["old-w1-sat"], "no free day: the shortest easy run's day is not needed, the run is dropped")
+            XCTAssertEqual(out.cap?.before ?? 0, 5076.923, accuracy: 0.01)
+            XCTAssertEqual(out.cap?.after ?? 0, 2 * 1776.923 + 1500, accuracy: 0.01)
+            // A second pass over its own output changes nothing (the week fits the days now).
+            XCTAssertEqual(FreezeLayout.lay(held: out.workouts, weekStart: week, ctx).workouts, out.workouts)
+        }
+    }
+
+    func testNoRunIsCutBelowTheEasyRunFloor() {
+        let week = FreezeFixture.monday(week: 1)
+        // Wednesday is not a training day: its run goes to Thursday. Long 30 + easy 30: the share would cut the long
+        // run to 16.15 minutes, but no run goes under 20 minutes (`minimumEasyRunSeconds`).
+        let held = [FreezeFixture.session("e", week: 1, .wednesday, .easy, minutes: 30),
+                    FreezeFixture.session("l", week: 1, .sunday, .long, minutes: 30)]
+        let out = FreezeLayout.lay(held: held, weekStart: week, layoutContext(days: [.thursday, .sunday], hardOutside: []))
+        let by = Dictionary(uniqueKeysWithValues: out.workouts.map { ($0.id, $0.durationSeconds) })
+        XCTAssertEqual(by["l"], 20 * 60)
+        XCTAssertEqual(by["e"], 20 * 60)
+        XCTAssertEqual(out.cap?.before, 50 * 60)
+        XCTAssertEqual(out.cap?.after, 40 * 60)
+        // Runs already under the floor are left alone.
+        let small = [FreezeFixture.session("e", week: 1, .wednesday, .easy, minutes: 15),
+                     FreezeFixture.session("l", week: 1, .sunday, .long, minutes: 18)]
+        let kept = FreezeLayout.lay(held: small, weekStart: week, layoutContext(days: [.thursday, .sunday], hardOutside: []))
+        XCTAssertEqual(kept.workouts.map(\.durationSeconds).sorted(), [900.0, 1080.0])
+    }
+
+    /// The baseline is still compared with the real history before the held weeks.
+    func testARealBaselineMismatchIsStillRefusedUnderAFreeze() throws {
+        let input = BaselinePlanMapping.planInput(settings: newGoal, baseline: report, startDate: today)
+        let history = BaselinePlanMapping.planHistory(from: report).filter { $0.date < today }
+        var high = input
+        high.recentWeeklySeconds = (input.recentWeeklySeconds ?? 6000) * 4
+        let r = PlanBuilder.build(high, history: history, timeZone: tz, freeze: FreezeFixture.hold())
+        guard case .cannotBuild(let issues) = r, issues.contains(where: { if case .recentVolumeDisagreesWithHistory = $0 { return true }; return false })
+        else { return XCTFail("\(r)") }
     }
 
     /// The freeze ends before the plan's first week and covers only the rest of this week.

@@ -197,7 +197,8 @@ public enum GoalPlanner {
                 trainingDays: settings.schedule.trainingDays, timeZone: baseline.timeZone) ?? []
             let report = GuardrailChecker.check(history: history + carried, planned: plan.workouts,
                                                 timeZone: baseline.timeZone, limits: limits,
-                                                freezes: freezes + (freeze?.freezes ?? []))
+                                                freezes: freezes + (freeze?.freezes ?? []),
+                                                regrowth: GuardrailRegrowth(preCap: built.summary?.preCap ?? .none))
             guard report.passed else { return .cannotPlan([.failsGuardrails(report)]) }
             return .plan(GoalPlan(settings: settings, input: input, plan: plan, history: history,
                                   guardrailReport: report, freezeEdit: built.summary))
@@ -276,7 +277,8 @@ public enum GoalPlanner {
                 if !onDays.isEmpty {
                     // The new plan already passed without them (`plan`); keep them only if it still passes with them.
                     let report = GuardrailChecker.check(history: p.history, planned: onDays + p.plan.workouts,
-                                                        timeZone: tz, limits: limits, freezes: allFreezes)
+                                                        timeZone: tz, limits: limits, freezes: allFreezes,
+                                                        regrowth: GuardrailRegrowth(preCap: p.freezeEdit?.preCap ?? .none))
                     // Under a freeze edit they stay: the plan was checked with them as the end of this week
                     // (`plan`), and without them the frozen week would grow past the week before it.
                     if report.passed || p.freezeEdit?.frozenWeekStarts.isEmpty == false {
