@@ -265,6 +265,7 @@ public struct SessionRunner: Sendable {
     @discardableResult
     public mutating func skipToNextSegment(at time: Double) -> [Announcement] {
         guard phase == .running else { return [] }
+        let wasPaused = isPaused
         var group: [Announcement] = []
         creditUntil(time, into: &group)
         guard phase == .running else { return speakGroup(group, at: time) }
@@ -274,6 +275,12 @@ public struct SessionRunner: Sendable {
         } else {
             finishSegment(early: true, endedWorkout: false, into: &group)
             beginSegment(active + 1, at: time, skipped: true, overshoot: 0, into: &group)
+        }
+        if wasPaused {
+            // Same as `resume(at:)`: the pause is not credited to the next segment. `clock`
+            // did not advance while paused, so the engine's no-cue window is already intact.
+            previousStopped = false
+            if time.isFinite, time > (lastTime ?? -.infinity) { lastTime = time }
         }
         isPaused = false
         return speakGroup(group, at: time)

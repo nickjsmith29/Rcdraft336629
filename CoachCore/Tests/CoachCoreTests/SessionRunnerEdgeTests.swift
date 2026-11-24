@@ -130,6 +130,37 @@ final class SessionRunnerEdgeTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(cue.time - t0, 130 - 1e-6)
     }
 
+    /// Skipping while paused must not credit the pause to the next segment: rep 2 still gets its full
+    /// planned moving time, is not reported complete early, and the engine's 60 s no-cue window is intact.
+    func testSkipWhilePausedDoesNotCreditThePauseToTheNextRep() {
+        let p = S.prescription([S.segment(.warmUp, 60), S.segment(.work, 120), S.segment(.jog, 90),
+                                S.segment(.work, 120), S.segment(.coolDown, 60)])
+        // Slower than the rep target, so the engine has a pace cue to give once its startup window ends.
+        let run = flat(p, pace: S.repPace + 60)
+        var runner = SessionRunner(prescription: p)
+        let t0 = run.readings[0].time
+        var said = feed(&runner, run, to: t0 + 200)
+        said += runner.pause(at: t0 + 200)
+        XCTAssertTrue(runner.isPaused)
+        let skipAt = t0 + 260
+        let skipped = runner.skipToNextSegment(at: skipAt)
+        said += skipped
+        XCTAssertFalse(runner.isPaused)
+        XCTAssertEqual(S.starts(skipped).last?.repNumber, 2)
+        let afterSkip = feed(&runner, run, from: skipAt)
+        said += afterSkip
+        // Rep 2 ran for its full 120 moving seconds, then the cool-down began.
+        let rep2 = S.splits(said).first { $0.repNumber == 2 }!
+        XCTAssertTrue(rep2.isComplete)
+        XCTAssertEqual(rep2.durationSeconds, 120, accuracy: 1e-6)
+        let coolAt = said.first { if case .segmentStart(let s) = $0.content { return s.role == .coolDown } else { return false } }!.time
+        XCTAssertEqual(coolAt - skipAt, 120, accuracy: 1.5)
+        // No pace cue in rep 2's first 60 s, but there is one later in it.
+        let cues = S.cues(afterSkip)
+        XCTAssertFalse(cues.isEmpty)
+        XCTAssertGreaterThanOrEqual(cues.first!.time - skipAt, 60 - 1e-6)
+    }
+
     // MARK: Skip and end
 
     /// Skipping a jog starts the next rep at once: no split for the jog, rep 2 flagged as skipped into.
