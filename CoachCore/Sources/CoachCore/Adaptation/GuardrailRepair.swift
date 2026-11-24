@@ -22,6 +22,12 @@ import Foundation
 ///   or what the share leaves for the day, whichever is more (#122). Time
 ///   that shortening frees goes back to the week's runs this repair cut,
 ///   never past their length before and within the guardrails (`giveBack`).
+/// - Easy runs within the long run (F3, 3.5 rule 5, #54): after any fix that
+///   cuts a long run, the week's other easy and recovery runs still to come,
+///   and a quality session's easy extension, are cut to its length in the
+///   same pass (`capEasyRuns`, GuardrailRepair+EasyCap.swift). The cut time
+///   is dropped, and the week keeps its time before the cap
+///   (`GuardrailPreCap`), so the cap never triggers a second share repair.
 /// - Single-run spike (3.5 rule 1): the planned run named by the violation
 ///   is cut to the allowed length (rounded down to a whole minute), never
 ///   below `AdaptationLimits.minimumTrimmedSeconds`. Only easy, recovery and
@@ -61,6 +67,9 @@ enum GuardrailRepair {
         var plan: [PlannedWorkout]
         var changes: [PlanChange]
         var report: GuardrailReport
+        /// The weeks whose easy runs this repair capped at a cut long run,
+        /// with those the state already held (3.5 rule 5, #54).
+        var preCap: GuardrailPreCap = .none
     }
 
     static let fixable: Set<GuardrailRule> = [.weeklyIncrease, .fourWeekIncrease, .volumeFreeze, .longRunShare, .recoveryWeek,
@@ -70,6 +79,7 @@ enum GuardrailRepair {
                        context: AdaptationContext, regrowth: GuardrailRegrowth = .none) -> Result {
         let input = plan
         var plan = plan
+        var regrowth = regrowth   // its `preCap` grows as easy runs are capped (3.5 rule 5, #54)
         var changes: [PlanChange] = []
         var stuck: Set<String> = []
         let limits = context.guardrails
@@ -80,6 +90,19 @@ enum GuardrailRepair {
                 .filter { fixable.contains($0.rule) && $0.rebuildOn == nil && !stuck.contains(key($0)) }
                 .min { $0.weekStart != $1.weekStart ? $0.weekStart < $1.weekStart : order($0.rule) < order($1.rule) }
             guard let v = next else { break }
+            // An easy run over the week's long run is capped with the week's
+            // other such runs, and the week keeps its time before the cap
+            // (3.5 rule 5, #54).
+            if v.rule == .easyRunLength,
+               let cap = capEasyRuns(week: v.weekStart, plan: plan, history: history, asOf: asOf, longRunCut: .none,
+                                     preCap: regrowth.preCap, context: context) {
+                plan = cap.plan
+                changes += cap.changes
+                regrowth.preCap = cap.preCap
+                report = GuardrailChecker.check(history: history, planned: plan, timeZone: context.timeZone,
+                                                limits: limits, freezes: freezes, units: context.units, regrowth: regrowth)
+                continue
+            }
             if var fix = fixOne(v, plan: plan, history: history, asOf: asOf, context: context, regrowth: regrowth) {
                 // A long-to-easy swap that shortened the long-run day gives
                 // the time it freed back to the week's runs this repair cut
@@ -98,6 +121,16 @@ enum GuardrailRepair {
                             explanation: c.explanation + " The \(text) this frees goes back to the week's other runs that were shortened, never past their length before and within the load guardrails.")
                     }
                 }
+                // A fix that cut a long run caps the week's easy runs at it, in
+                // the same pass (3.5 rule 5, #54): the share was read once, above.
+                for week in weeksWithLongRunCut(before: plan, after: fix.plan, timeZone: context.timeZone) {
+                    guard let cap = capEasyRuns(week: week, plan: fix.plan, history: history, asOf: asOf,
+                                                longRunCut: v.rule == .longRunShare ? .share : .guardrails,
+                                                preCap: regrowth.preCap, context: context) else { continue }
+                    fix.plan = cap.plan
+                    fix.changes += cap.changes
+                    regrowth.preCap = cap.preCap
+                }
                 plan = fix.plan
                 changes += fix.changes
                 // A fix can open a way to fix what was stuck in the same week
@@ -111,7 +144,7 @@ enum GuardrailRepair {
             report = GuardrailChecker.check(history: history, planned: plan, timeZone: context.timeZone,
                                             limits: limits, freezes: freezes, units: context.units, regrowth: regrowth)
         }
-        return Result(plan: plan, changes: oneChangePerDroppedRun(changes), report: report)
+        return Result(plan: plan, changes: oneChangePerDroppedRun(changes), report: report, preCap: regrowth.preCap)
     }
 
     /// One change per run (#146 review): a run this repair shortened and
@@ -206,9 +239,11 @@ enum GuardrailRepair {
         case .longRunShare:
             // The share is of weekly time (3.5 rule 5), so it is cut in time.
             cutContext.guardrails.measure = .time
-            guard let total = weekVolume(v.weekStart, history + plan, cutContext),
+            guard let own = weekVolume(v.weekStart, history + plan, cutContext),
                   let li = inWeek.filter({ plan[$0].kind == .long }).max(by: { volume(plan[$0], .time) < volume(plan[$1], .time) })
             else { return nil }
+            // The share is read at the week's time before an easy-run cap, as the checker reads it (#54).
+            let total = own + regrowth.preCap.extra(v.weekStart, actual: own, .time)
             let s = v.allowed
             amount = (volume(plan[li], .time) - s * total) / (1 - s)
             longOnly = true
@@ -283,7 +318,10 @@ enum GuardrailRepair {
         // running is too little, or the long run is at its floor) becomes an
         // easy run of the same length (3.5 rules 5 and 6, #64).
         if longOnly, whole.map({ $0.remaining > 1e-6 }) ?? true,
-           let swapped = swapLongRunToEasy(v, sessions: inWeek, plan: plan, history: history, context: ctx) {
+           let swapped = swapLongRunToEasy(v, sessions: inWeek, plan: plan, history: history,
+                                           capExtraSeconds: regrowth.preCap.extra(
+                                               v.weekStart, actual: weekVolume(v.weekStart, history + plan, cutContext) ?? 0, .time),
+                                           context: ctx) {
             return swapped
         }
         // Nothing left to trim or drop but a long run at its floor, and the
@@ -336,6 +374,7 @@ enum GuardrailRepair {
     /// share. Only a run at the floor, the shortest run the plan schedules,
     /// is not read as a long run, as for #101's pain-stop caps (heuristic).
     static func swapLongRunToEasy(_ v: GuardrailViolation, sessions: [Int], plan: [PlannedWorkout], history: [PlannedWorkout],
+                                  capExtraSeconds: Double = 0,
                                   context ctx: AdaptationContext) -> (plan: [PlannedWorkout], changes: [PlanChange])? {
         let tz = ctx.timeZone
         guard let i = sessions.filter({ plan[$0].kind == .long }).max(by: { volume(plan[$0], .time) < volume(plan[$1], .time) })
@@ -348,7 +387,7 @@ enum GuardrailRepair {
         // The share is of the week's time, races included, as the checker reads it (3.5 rule 5).
         let others = (history + plan.indices.filter { $0 != i }.map { plan[$0] })
             .filter { PlanCalendar.weekStart(containing: $0.date, timeZone: tz) == v.weekStart }
-            .reduce(0.0) { $0 + volume($1, .time) }
+            .reduce(0.0) { $0 + volume($1, .time) } + capExtraSeconds   // the week at its time before an easy-run cap (#54)
         let seconds = longRunDayEasySeconds(w, otherSeconds: others, share: v.allowed, floor: ctx.limits.minimumTrimmedSeconds)
         let shortened = seconds < w.durationSeconds - 1e-6
         var easy = (shortened ? w.resized(toSeconds: seconds) : w).swappedToEasy()
