@@ -304,6 +304,18 @@ extension GuardrailChecker {
         return (from...to).allSatisfy { volumes[$0] != nil }
     }
 
+    /// True when a return week run at `ran` was run **short** of what it was
+    /// planned to hold (`planned`), both outside races: under 1 / (1 +
+    /// `regrowthMaxWeeklyRise`), about 83% (SPEC 3.5 rule 4, owner's decision,
+    /// #32; the same reading after a pain stop of more than 14 days, rule 7,
+    /// #93). A short week restarts the return's steps. Heuristic: the 83% is
+    /// derived from rule 6's 20% default, not a separate figure. A tiny margin
+    /// keeps a week run at exactly the line from counting as short.
+    static func isShortReturnWeek(ran: Double, planned: Double, limits: GuardrailLimits) -> Bool {
+        let rise = limits.regrowthMaxWeeklyRise.isFinite ? max(0, limits.regrowthMaxWeeklyRise) : 0
+        return ran < planned / (1 + rise) - 1e-9 * max(1, planned)
+    }
+
     /// The weeks of the return after the longer break `b`, from return week
     /// 1 to week `through` (an index that may be the week after the series:
     /// the next week), and the index of the last week of the return so far.
@@ -327,7 +339,6 @@ extension GuardrailChecker {
         let steps = limits.longerBreakReturnSteps
         guard !steps.isEmpty, steps.allSatisfy({ $0.isFinite && $0 > 0 }), b.end >= 0 else { return ([], b.end - 1, false) }
         let stop = breaks.first(where: { $0.first >= b.end })?.first ?? Int.max
-        let rise = limits.regrowthMaxWeeklyRise.isFinite ? max(0, limits.regrowthMaxWeeklyRise) : 0
         var out: [LongReturn] = []
         var step = 1
         var floor: Double?
@@ -343,7 +354,7 @@ extension GuardrailChecker {
             last = j
             let v = volumes[j] ?? (j < lows.count ? max(0, lows[j]) : 0)
             let planned = j >= plannedFrom ? v : ceiling
-            let short = v < planned / (1 + rise) - 1e-9 * max(1, planned)
+            let short = isShortReturnWeek(ran: v, planned: planned, limits: limits)
             if step >= steps.count, !short { return (out, last, true) }
             if short { step = 1; floor = v } else { step += 1; floor = nil }
             j += 1

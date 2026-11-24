@@ -28,12 +28,18 @@ import Foundation
 // 5 adds `preCap` (the weeks whose easy runs were capped at a cut long run,
 // with their time before the cap, SPEC 3.5 rule 5, #54); an older state
 // decodes with none, and every week is then read at its own time.
+// 6 adds the restart state of the return after a pain stop of more than 14
+// days (`PainReturn.restartWeek`, `restartFloor`, `judgedThrough`, SPEC 3.5
+// rule 7, #93); a state of version 5 or earlier decodes with none, which
+// reads as no restart yet, and the engine judges the return weeks from the
+// first full week on (a week already run short before the upgrade restarts
+// the steps at the next event, the conservative result).
 // Doubles are stored as they are, so a non-finite value (which the engine
 // never stores) needs a `JSONEncoder.nonConformingFloatEncodingStrategy`.
 
 extension AdaptationState: Codable {
     /// Version of the stored format. Decoding a higher version throws.
-    public static let formatVersion = 5
+    public static let formatVersion = 6
 
     enum CodingKeys: String, CodingKey {
         case formatVersion, assessments, qualitySignals, easyHeartRates, longRuns, painCheckIns, appliedPainResponse,
